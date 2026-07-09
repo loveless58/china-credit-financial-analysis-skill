@@ -1,0 +1,7 @@
+interface:
+  display_name: "中国授信财务分析"
+  short_description: "撰写、替换并验证授信评审报告财务分析章节。"
+  default_prompt: "Use $china-credit-financial-analysis to update a Chinese credit review report financial analysis section from verified financial data."
+
+policy:
+  allow_implicit_invocation: true
