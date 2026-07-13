@@ -1,0 +1,287 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.bank-rm/schemas/financial_analysis_bundle-1.0.json",
+  "title": "Financial Analysis Bundle 1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "company_name",
+    "reporting_basis",
+    "currency",
+    "unit",
+    "periods",
+    "sources",
+    "financial_tables",
+    "ratios",
+    "risk_points",
+    "pending_verification",
+    "docx_write_plan"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "company_name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "reporting_basis": {
+      "type": "string",
+      "minLength": 1
+    },
+    "currency": {
+      "type": "string",
+      "minLength": 1
+    },
+    "unit": {
+      "type": "string",
+      "minLength": 1
+    },
+    "periods": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "sources": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "type", "file"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "type": {
+            "type": "string",
+            "minLength": 1
+          },
+          "file": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "financial_tables": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["rows"],
+        "properties": {
+          "rows": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["metric", "label", "values"],
+              "properties": {
+                "metric": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "values": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["value", "status", "source_refs"],
+                    "properties": {
+                      "value": {},
+                      "status": {
+                        "type": "string"
+                      },
+                      "source_refs": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "ratios": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label", "period", "formula", "value", "display", "status", "inputs"],
+        "properties": {
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "period": {
+            "type": "string",
+            "minLength": 1
+          },
+          "formula": {
+            "type": "string",
+            "minLength": 1
+          },
+          "value": {},
+          "display": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "const": "calculated"
+          },
+          "inputs": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["metric", "period"],
+              "properties": {
+                "metric": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "period": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "risk_points": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["category", "statement", "evidence_refs"],
+        "properties": {
+          "category": {
+            "type": "string",
+            "minLength": 1
+          },
+          "statement": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence_refs": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "pending_verification": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["issue", "status"],
+        "properties": {
+          "issue": {
+            "type": "string",
+            "minLength": 1
+          },
+          "status": {
+            "enum": [
+              "source_missing",
+              "unit_missing",
+              "conflict",
+              "missing",
+              "llm_generated_blocked"
+            ]
+          }
+        }
+      }
+    },
+    "docx_write_plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "section_start",
+        "analysis_anchor",
+        "section_end",
+        "analysis_markdown",
+        "table_rows",
+        "target_unit",
+        "require_backup",
+        "preserve_asset_liability_table",
+        "change_shading",
+        "output_filename"
+      ],
+      "properties": {
+        "mode": {
+          "enum": ["insert", "replace"]
+        },
+        "section_start": {
+          "type": "string",
+          "minLength": 1
+        },
+        "analysis_anchor": {
+          "type": "string",
+          "minLength": 1
+        },
+        "section_end": {
+          "type": "string",
+          "minLength": 1
+        },
+        "analysis_markdown": {
+          "type": "string",
+          "minLength": 1
+        },
+        "table_rows": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "target_unit": {
+          "type": "string",
+          "minLength": 1
+        },
+        "require_backup": {
+          "const": true
+        },
+        "preserve_asset_liability_table": {
+          "type": "boolean"
+        },
+        "change_shading": {
+          "type": "string",
+          "pattern": "^[0-9A-Fa-f]{6}$"
+        },
+        "output_filename": {
+          "type": "string",
+          "pattern": "\\.docx$"
+        }
+      }
+    }
+  }
+}
