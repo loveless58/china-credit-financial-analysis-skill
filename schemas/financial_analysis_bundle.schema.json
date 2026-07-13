@@ -99,7 +99,15 @@
                     "properties": {
                       "value": {},
                       "status": {
-                        "type": "string"
+                        "enum": [
+                          "verified",
+                          "calculated",
+                          "source_missing",
+                          "unit_missing",
+                          "conflict",
+                          "missing",
+                          "llm_generated_blocked"
+                        ]
                       },
                       "source_refs": {
                         "type": "array",

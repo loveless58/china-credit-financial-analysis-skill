@@ -95,7 +95,7 @@ def valid_bundle() -> dict:
     }
 
 
-def run_case(name: str, bundle: dict, expected_code: int, directory: Path) -> None:
+def run_case(name: str, bundle: dict, expected_code: int, directory: Path) -> str | None:
     bundle_path = directory / f"{name}.json"
     result_path = directory / f"{name}.result.json"
     bundle_path.write_text(json.dumps(bundle, ensure_ascii=False), encoding="utf-8")
@@ -117,20 +117,65 @@ def run_case(name: str, bundle: dict, expected_code: int, directory: Path) -> No
         check=False,
     )
 
-    assert completed.returncode == expected_code, (
-        f"{name}: expected exit {expected_code}, got {completed.returncode}; "
-        f"stdout={completed.stdout!r}; stderr={completed.stderr!r}"
-    )
+    if completed.returncode != expected_code:
+        return (
+            f"{name}: expected exit {expected_code}, got {completed.returncode}; "
+            f"stdout={completed.stdout!r}; stderr={completed.stderr!r}"
+        )
+    if not result_path.exists():
+        return f"{name}: result JSON was not created"
 
     result = json.loads(result_path.read_text(encoding="utf-8"))
-    if expected_code == 0:
-        assert result == {"valid": True, "errors": []}, f"{name}: {result!r}"
-    else:
-        assert result["valid"] is False, f"{name}: {result!r}"
-        assert result["errors"], f"{name}: {result!r}"
+    if expected_code == 0 and result != {"valid": True, "errors": []}:
+        return f"{name}: {result!r}"
+    if expected_code != 0 and (result.get("valid") is not False or not result.get("errors")):
+        return f"{name}: {result!r}"
+    return None
 
 
 def main() -> None:
+    missing_metric = valid_bundle()
+    del missing_metric["financial_tables"]["asset_liability"]["rows"][0]["metric"]
+
+    missing_ratio_label_period = valid_bundle()
+    del missing_ratio_label_period["ratios"]["asset_liability_ratio"]["label"]
+    del missing_ratio_label_period["ratios"]["asset_liability_ratio"]["period"]
+
+    missing_risk_category = valid_bundle()
+    del missing_risk_category["risk_points"][0]["category"]
+
+    empty_source_metadata = valid_bundle()
+    empty_source_metadata["sources"]["annual_2025"]["name"] = ""
+
+    illegal_status = valid_bundle()
+    illegal_status["financial_tables"]["asset_liability"]["rows"][0]["values"]["2024"]["status"] = "not_allowed"
+
+    unknown_source_field = valid_bundle()
+    unknown_source_field["sources"]["annual_2025"]["unexpected"] = True
+
+    unknown_table_field = valid_bundle()
+    unknown_table_field["financial_tables"]["asset_liability"]["unexpected"] = True
+
+    unknown_row_field = valid_bundle()
+    unknown_row_field["financial_tables"]["asset_liability"]["rows"][0]["unexpected"] = True
+
+    unknown_value_field = valid_bundle()
+    unknown_value_field["financial_tables"]["asset_liability"]["rows"][0]["values"]["2024"]["unexpected"] = True
+
+    unknown_ratio_field = valid_bundle()
+    unknown_ratio_field["ratios"]["asset_liability_ratio"]["unexpected"] = True
+
+    unknown_ratio_input_field = valid_bundle()
+    unknown_ratio_input_field["ratios"]["asset_liability_ratio"]["inputs"][0]["unexpected"] = True
+
+    unknown_risk_field = valid_bundle()
+    unknown_risk_field["risk_points"][0]["unexpected"] = True
+
+    unknown_pending_field = valid_bundle()
+    unknown_pending_field["pending_verification"] = [
+        {"issue": "待补充审计报告", "status": "source_missing", "unexpected": True}
+    ]
+
     cases = [
         ("valid", valid_bundle(), 0),
         ("missing_unit", {**valid_bundle(), "unit": ""}, 1),
@@ -149,12 +194,66 @@ def main() -> None:
             },
             1,
         ),
+        (
+            "forbidden_denial",
+            {
+                **valid_bundle(),
+                "risk_points": [
+                    {
+                        "category": "结论",
+                        "statement": "建议不予授信。",
+                        "evidence_refs": ["annual_2025"],
+                    }
+                ],
+            },
+            1,
+        ),
+        (
+            "forbidden_pass",
+            {
+                **valid_bundle(),
+                "docx_write_plan": {
+                    **valid_bundle()["docx_write_plan"],
+                    "analysis_markdown": "建议通过授信审批。",
+                },
+            },
+            1,
+        ),
+        (
+            "forbidden_quota",
+            {
+                **valid_bundle(),
+                "docx_write_plan": {
+                    **valid_bundle()["docx_write_plan"],
+                    "analysis_markdown": "建议授信额度为100万元。",
+                },
+            },
+            1,
+        ),
+        ("empty_source_metadata", empty_source_metadata, 1),
+        ("missing_metric", missing_metric, 1),
+        ("missing_ratio_label_period", missing_ratio_label_period, 1),
+        ("missing_risk_category", missing_risk_category, 1),
+        ("illegal_status", illegal_status, 1),
+        ("unknown_source_field", unknown_source_field, 1),
+        ("unknown_table_field", unknown_table_field, 1),
+        ("unknown_row_field", unknown_row_field, 1),
+        ("unknown_value_field", unknown_value_field, 1),
+        ("unknown_ratio_field", unknown_ratio_field, 1),
+        ("unknown_ratio_input_field", unknown_ratio_input_field, 1),
+        ("unknown_risk_field", unknown_risk_field, 1),
+        ("unknown_pending_field", unknown_pending_field, 1),
     ]
 
     with tempfile.TemporaryDirectory() as temporary_directory:
         directory = Path(temporary_directory)
+        failures: list[str] = []
         for name, bundle, expected_code in cases:
-            run_case(name, bundle, expected_code, directory)
+            failure = run_case(name, bundle, expected_code, directory)
+            if failure:
+                failures.append(failure)
+
+    assert not failures, "\n".join(failures)
 
     print("financial analysis bundle self-test passed")
 

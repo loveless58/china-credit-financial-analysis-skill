@@ -23,7 +23,7 @@
 
 允许的状态为 `verified`、`calculated`、`source_missing`、`unit_missing`、`conflict`、`missing`、`llm_generated_blocked`。只有 `verified` 与 `calculated` 可作为 `analysis_markdown` 正文的数字准入状态；其余状态必须留在 `pending_verification` 或对应的数据项中，不能作为已确认正文事实。
 
-`verified` 财务表数据必须引用 `sources` 中存在的来源 ID。`pending_verification.status` 只能使用非正文状态。`risk_points.statement` 和 `docx_write_plan.analysis_markdown` 都会拦截以下结论：`同意授信`、`风险可控`、`建议批复额度`、`建议同意授信`。
+`verified` 财务表数据必须引用 `sources` 中存在的来源 ID。`pending_verification.status` 只能使用非正文状态。`risk_points.statement` 和 `docx_write_plan.analysis_markdown` 使用同一组具名禁令模式，拦截四类业务结论：同意（如“建议同意授信”）、否决（如“建议不予授信”）、通过（如“建议通过授信审批”）和额度（如“建议授信额度为100万元”）。
 
 ## DOCX 写回计划
 
