@@ -23,7 +23,18 @@
 
 允许的状态为 `verified`、`calculated`、`source_missing`、`unit_missing`、`conflict`、`missing`、`llm_generated_blocked`。只有 `verified` 与 `calculated` 可作为 `analysis_markdown` 正文的数字准入状态；其余状态必须留在 `pending_verification` 或对应的数据项中，不能作为已确认正文事实。
 
-`verified` 财务表数据必须引用 `sources` 中存在的来源 ID。`pending_verification.status` 只能使用非正文状态。`risk_points.statement` 和 `docx_write_plan.analysis_markdown` 使用同一组具名禁令模式，拦截四类业务结论：同意（如“建议同意授信”）、否决（如“建议不予授信”）、通过（如“建议通过授信审批”）和额度（如“建议授信额度为100万元”）。
+`verified` 财务表数据必须引用 `sources` 中存在的来源 ID。`pending_verification.status` 只能使用非正文状态。
+
+### 授信结论禁入边界
+
+`risk_points.statement` 和 `docx_write_plan.analysis_markdown` 共用同一组具名、保守的禁令模式。规则不是只匹配完整短语，而是将授信语义与决策措辞或决策金额组合判断：
+
+- 同意类：`同意`、`给予`、`予以`、`批准`、`核准`、`批复` 与“授信”或“授信审批”组合。
+- 否决类：`不建议`、`不同意`、`不予`、`拒绝`、`否决`、`不通过` 与“授信”或“授信审批”组合。
+- 通过类：`通过`、`批准`、`核准` 与“授信”或“授信审批”组合。
+- 额度类：`建议`、`拟定`、`核定`等决策措辞与授信金额组合，或与授信额度、授信限额的决策组合。
+
+因此“建议给予授信”“不建议授信”“建议授信100万元”均禁止进入两个正文入口。纯事实性描述在不包含审批建议、决定、通过或额度决策措辞时允许准入，例如“公司现有银行授信余额100万元”“公司授信余额较上年下降”。事实与决策语义混杂或无法确认时，应记录到 `pending_verification`，而不应写入正文。
 
 ## DOCX 写回计划
 

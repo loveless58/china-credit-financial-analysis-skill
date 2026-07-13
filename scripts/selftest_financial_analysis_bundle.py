@@ -95,6 +95,18 @@ def valid_bundle() -> dict:
     }
 
 
+def bundle_with_risk_statement(statement: str) -> dict:
+    bundle = valid_bundle()
+    bundle["risk_points"][0]["statement"] = statement
+    return bundle
+
+
+def bundle_with_analysis_markdown(analysis_markdown: str) -> dict:
+    bundle = valid_bundle()
+    bundle["docx_write_plan"]["analysis_markdown"] = analysis_markdown
+    return bundle
+
+
 def run_case(name: str, bundle: dict, expected_code: int, directory: Path) -> str | None:
     bundle_path = directory / f"{name}.json"
     result_path = directory / f"{name}.result.json"
@@ -229,6 +241,42 @@ def main() -> None:
                 },
             },
             1,
+        ),
+        ("forbidden_give_risk", bundle_with_risk_statement("建议给予授信。"), 1),
+        (
+            "forbidden_give_analysis",
+            bundle_with_analysis_markdown("建议给予授信。"),
+            1,
+        ),
+        (
+            "forbidden_not_recommend_risk",
+            bundle_with_risk_statement("不建议授信。"),
+            1,
+        ),
+        (
+            "forbidden_not_recommend_analysis",
+            bundle_with_analysis_markdown("不建议授信。"),
+            1,
+        ),
+        (
+            "forbidden_amount_risk",
+            bundle_with_risk_statement("建议授信100万元。"),
+            1,
+        ),
+        (
+            "forbidden_amount_analysis",
+            bundle_with_analysis_markdown("建议授信100万元。"),
+            1,
+        ),
+        (
+            "allowed_existing_credit_balance_risk",
+            bundle_with_risk_statement("公司现有银行授信余额100万元。"),
+            0,
+        ),
+        (
+            "allowed_credit_balance_change_analysis",
+            bundle_with_analysis_markdown("公司授信余额较上年下降。"),
+            0,
         ),
         ("empty_source_metadata", empty_source_metadata, 1),
         ("missing_metric", missing_metric, 1),

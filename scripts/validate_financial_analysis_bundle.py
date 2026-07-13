@@ -20,13 +20,31 @@ ALLOWED_STATUSES = {
     "llm_generated_blocked",
 }
 BODY_STATUSES = {"verified", "calculated"}
+CREDIT_SEMANTICS = r"(?:授信(?:审批)?|信贷)"
+AFFIRMATIVE_DECISIONS = r"(?:同意|给予|予以|批准|核准|批复)"
+NEGATIVE_DECISIONS = r"(?:不建议|不同意|不予|拒绝|否决|不通过)"
+PASS_DECISIONS = r"(?:通过|批准|核准)"
+AMOUNT_DECISIONS = r"(?:建议|拟定|核定|批准|核准|批复|给予|予以)"
+MONEY_AMOUNT = r"(?:人民币)?\d+(?:\.\d+)?(?:亿元|万元|元)"
 FORBIDDEN_CONCLUSION_PATTERNS = {
     "同意": re.compile(
-        r"(?:同意|批准|批复).{0,8}(?:授信|审批)|建议(?:同意|批准|批复).{0,8}(?:授信|审批)"
+        rf"{AFFIRMATIVE_DECISIONS}.{{0,8}}{CREDIT_SEMANTICS}|"
+        rf"{CREDIT_SEMANTICS}.{{0,8}}{AFFIRMATIVE_DECISIONS}"
     ),
-    "否决": re.compile(r"(?:不予|否决|拒绝).{0,8}(?:授信|审批|申请)"),
-    "通过": re.compile(r"(?:授信|审批|信贷).{0,8}通过|通过.{0,8}(?:授信|审批|信贷)"),
-    "额度": re.compile(r"(?:建议|拟|批准|批复|授信).{0,12}(?:额度|限额)"),
+    "否决": re.compile(
+        rf"{NEGATIVE_DECISIONS}.{{0,8}}{CREDIT_SEMANTICS}|"
+        rf"{CREDIT_SEMANTICS}.{{0,8}}{NEGATIVE_DECISIONS}"
+    ),
+    "通过": re.compile(
+        rf"{PASS_DECISIONS}.{{0,8}}{CREDIT_SEMANTICS}|"
+        rf"{CREDIT_SEMANTICS}.{{0,8}}{PASS_DECISIONS}"
+    ),
+    "额度": re.compile(
+        rf"{AMOUNT_DECISIONS}.{{0,8}}{CREDIT_SEMANTICS}.{{0,12}}{MONEY_AMOUNT}|"
+        rf"{AMOUNT_DECISIONS}.{{0,12}}(?:授信)?(?:额度|限额)|"
+        rf"(?:授信)?(?:额度|限额).{{0,8}}{AMOUNT_DECISIONS}"
+    ),
+    "风险结论": re.compile(r"风险可控"),
 }
 
 
