@@ -779,6 +779,20 @@ def assert_staging_cleanup_and_atomic_publish(tmp_path: Path) -> None:
     assert not [path for path in out_dir.iterdir() if ".staging-" in path.name]
 
 
+def assert_fixed_artifact_conflict_blocks_before_backup(tmp_path: Path) -> None:
+    source = tmp_path / "artifact-conflict-source.docx"
+    make_source_docx(source)
+    out_dir = tmp_path / "artifact-conflict-output"
+    out_dir.mkdir()
+    (out_dir / "number_audit.json").mkdir()
+
+    result = run_updater(source, valid_bundle(), out_dir)
+    assert result.returncode != 0
+    assert not list(out_dir.glob("*.backup-*.docx"))
+    assert not (out_dir / OUTPUT_FILENAME).exists()
+    assert not [path for path in out_dir.iterdir() if ".staging-" in path.name]
+
+
 def assert_table_format_fingerprint_detects_loss(tmp_path: Path) -> None:
     from update_financial_docx import table_format_fingerprint
 
@@ -790,6 +804,20 @@ def assert_table_format_fingerprint_detects_loss(tmp_path: Path) -> None:
     set_cell_shading(table.cell(3, 1), "ABCDEF")
     changed = table_format_fingerprint(table, table_rows())
     assert changed != expected
+
+    row_document = Document(str(docx))
+    row_table = row_document.tables[0]
+    row_expected = table_format_fingerprint(row_table, table_rows())
+    row_table.rows[0].height = Pt(42)
+    assert table_format_fingerprint(row_table, table_rows()) != row_expected
+
+    grid_document = Document(str(docx))
+    grid_table = grid_document.tables[0]
+    grid_expected = table_format_fingerprint(grid_table, table_rows())
+    grid_col = grid_table._tbl.tblGrid.find(qn("w:gridCol"))
+    assert grid_col is not None
+    grid_col.set(qn("w:w"), "9999")
+    assert table_format_fingerprint(grid_table, table_rows()) != grid_expected
 
 
 def assert_planned_empty_cells_are_validated(tmp_path: Path) -> None:
@@ -839,6 +867,8 @@ def run_selected_case(case: str, tmp_path: Path) -> None:
         assert_body_anchor_boundaries(tmp_path)
     elif case == "staging-atomic-publish":
         assert_staging_cleanup_and_atomic_publish(tmp_path)
+    elif case == "artifact-path-conflict":
+        assert_fixed_artifact_conflict_blocks_before_backup(tmp_path)
     else:
         raise ValueError(f"unknown self-test case: {case}")
 
@@ -876,6 +906,7 @@ def main() -> int:
         assert_pending_written_after_anchor_failure(tmp_path)
         assert_body_anchor_boundaries(tmp_path)
         assert_staging_cleanup_and_atomic_publish(tmp_path)
+        assert_fixed_artifact_conflict_blocks_before_backup(tmp_path)
 
     print("financial DOCX update self-test passed")
     return 0

@@ -158,6 +158,12 @@ def _staging_output_path(output: Path) -> Path:
         return Path(file_handle.name)
 
 
+def _ensure_artifact_paths_available(paths: list[Path]) -> None:
+    conflicts = [str(path.resolve()) for path in paths if path.exists()]
+    if conflicts:
+        raise UpdateBlocked("output artifact path already exists", conflicts)
+
+
 def _validate_table_dimensions(table, rows: list[list[str]]) -> None:
     template_row_count = len(table.rows)
     if len(rows) != template_row_count:
@@ -310,6 +316,10 @@ def table_format_fingerprint(table, rows: list[list[str]]) -> dict[str, object]:
             )
     return {
         "table_properties": _element_xml(table._tbl.tblPr),
+        "table_grid": _element_xml(table._tbl.tblGrid),
+        "row_properties": [
+            _element_xml(row._tr.trPr) for row in table.rows
+        ],
         "cells": cells,
     }
 
@@ -344,16 +354,25 @@ def update_financial_docx(
     source_docx = source_docx.resolve()
     plan = bundle["docx_write_plan"]
     output = _safe_output_path(out_dir, plan["output_filename"], source_docx)
-    planned_backup = backup_path(source_docx, out_dir, reserved=output)
-    _ensure_distinct_document_paths(source_docx, output, planned_backup)
-    backup = create_backup(source_docx, planned_backup)
     number_audit_path = out_dir / "number_audit.json"
     validation_result_path = out_dir / "validation_result.json"
     pending_output_path = out_dir / "待核验清单.md"
-    write_json(number_audit_path, {"findings": []})
+    change_log_path = out_dir / "change_log.md"
+    _ensure_artifact_paths_available(
+        [
+            number_audit_path,
+            validation_result_path,
+            pending_output_path,
+            change_log_path,
+        ]
+    )
+    planned_backup = backup_path(source_docx, out_dir, reserved=output)
+    _ensure_distinct_document_paths(source_docx, output, planned_backup)
+    backup = create_backup(source_docx, planned_backup)
     staging: Path | None = None
 
     try:
+        write_json(number_audit_path, {"findings": []})
         _ensure_distinct_document_paths(source_docx, output, backup)
         findings = audit_text(plan["analysis_markdown"], [bundle])
         if asset_liability_rows is not None:
@@ -479,7 +498,7 @@ def update_financial_docx(
             pending_output_path, bundle["pending_verification"]
         )
         change_log = write_change_log(
-            out=out_dir / "change_log.md",
+            out=change_log_path,
             original=source_docx,
             workspace_copy=source_docx,
             backup=backup,

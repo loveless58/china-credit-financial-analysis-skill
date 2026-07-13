@@ -67,9 +67,15 @@ def main() -> None:
             "30"
         ], f"table word authorized amount on {surface}"
 
+    for amount in ("30", "999"):
+        report_amount_findings = audit_text(f"报表{amount}万元差异。", [bundle])
+        assert [item["number"] for item in report_amount_findings] == [
+            amount
+        ], f"report word authorized financial amount {amount}"
+
     structural_number_draft = (
         "1. 总资产分析\n"
-        "表1 资产负债简表\n"
+        "表1：资产负债简表\n"
         "第1章 财务分析\n"
         "第2节 偿债能力\n"
         "第3项 风险提示"

@@ -110,7 +110,7 @@ def is_structural_number(draft: str, start: int, end: int) -> bool:
     ):
         return True
     if start > 0 and draft[start - 1] == "表":
-        return True
+        return end == len(draft) or bool(re.match(r"[：:\s、，,）)\]】]", draft[end:]))
     return (
         start > 0
         and draft[start - 1] == "第"
