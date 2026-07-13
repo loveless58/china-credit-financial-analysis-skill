@@ -49,6 +49,21 @@ def main() -> None:
     }
     assert audit_text("2025年末总资产为120.00万元，资产负债率为50.00%。", [legacy_payload]) == []
 
+    legacy_multiplier_payload = {
+        "calculated_metrics": [
+            {"value": "1.23", "display": "1.23倍"},
+            {"value": "-", "display": " "},
+            {"value": None, "display": "-"},
+        ]
+    }
+    assert audit_text("指标为1.23。", [legacy_multiplier_payload]) == []
+
+    non_numeric_display_payload = {
+        "calculated_metrics": [{"value": "-", "display": "1.23倍"}]
+    }
+    non_numeric_findings = audit_text("指标为1.23。", [non_numeric_display_payload])
+    assert [item["number"] for item in non_numeric_findings] == ["1.23"]
+
     signed_comma_payload = {
         "financial_tables": {
             "asset_liability": {

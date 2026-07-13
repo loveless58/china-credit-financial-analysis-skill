@@ -6,7 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -19,9 +19,14 @@ def normalize_number(text: str) -> str:
     return format(Decimal(numeric_text).normalize(), "f")
 
 
-def number_key(text: str) -> tuple[str, bool]:
+def number_key(text: str) -> tuple[str, bool] | None:
     raw = text.strip()
-    return normalize_number(raw), raw.endswith("%")
+    if not NUMBER_RE.fullmatch(raw):
+        return None
+    try:
+        return normalize_number(raw), raw.endswith("%")
+    except (InvalidOperation, ValueError):
+        return None
 
 
 def collect_allowed(payload: dict[str, Any]) -> set[tuple[str, bool]]:
@@ -31,7 +36,9 @@ def collect_allowed(payload: dict[str, Any]) -> set[tuple[str, bool]]:
         if isinstance(node, dict):
             for key, value in node.items():
                 if key in {"value", "display"} and value not in (None, ""):
-                    allowed.add(number_key(str(value)))
+                    key_value = number_key(str(value))
+                    if key_value is not None:
+                        allowed.add(key_value)
                 visit(value)
         elif isinstance(node, list):
             for value in node:
@@ -40,7 +47,9 @@ def collect_allowed(payload: dict[str, Any]) -> set[tuple[str, bool]]:
     for key in ("metrics", "calculated_metrics", "financial_tables", "ratios"):
         visit(payload.get(key, {}))
     for period in payload.get("periods", []):
-        allowed.add(number_key(str(period)))
+        period_key = number_key(str(period))
+        if period_key is not None:
+            allowed.add(period_key)
     return allowed
 
 
@@ -72,7 +81,8 @@ def audit_text(draft: str, payloads: list[dict[str, Any]]) -> list[dict[str, Any
         raw = match.group(0)
         if is_contextual_non_financial_number(draft, match.start(), match.end(), raw):
             continue
-        if number_key(raw) not in allowed:
+        key = number_key(raw)
+        if key is None or key not in allowed:
             findings.append(
                 {
                     "number": raw,
