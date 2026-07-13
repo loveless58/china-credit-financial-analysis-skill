@@ -29,8 +29,8 @@ Do not insert a separate Codex recommendation block unless the user asks for an 
 
 The asset-liability summary table is format-sensitive. When the original report has an asset-liability summary table:
 
-1. Locate it by anchors such as `资产负债简表`, `资产总计`, `负债合计`, `利润及利润分配表`, or `现金流量简表`.
-2. Clone the original table OOXML.
+1. Use OOXML body order to locate it between the configured financial-section start and end anchors. When both consolidated and parent-company asset tables exist, the target is the anchored table whose nearest preceding non-empty paragraph is `合并数据：`. After section, table, and context filters are applied, zero or multiple candidates block the write.
+2. Reuse the original table OOXML in place.
 3. Replace cell text only.
 4. Preserve:
    - table style and width;
@@ -41,31 +41,23 @@ The asset-liability summary table is format-sensitive. When the original report 
    - paragraph alignment;
    - run-level Chinese font and size;
    - bold settings.
-5. If row/column counts are incompatible, stop and either adapt the row matrix to the template or explicitly record fallback creation.
-
-Fallback creation is allowed only when the original template table cannot be found or is structurally incompatible. The fallback must still match the standard:
-
-- financial-section change shading: default `FFF2CC`;
--正文 font: `仿宋_GB2312`, 14 pt unless template sampling shows otherwise;
-- table font: `仿宋`, 12 pt unless template sampling shows otherwise;
-- centered table cells;
-- black single-line borders;
-- title contains reporting basis and unit.
+5. If row/column counts are incompatible, stop and record the failure in `待核验清单.md`; Phase 1 does not create a fallback table.
 
 ## Change Marking
 
-Apply change shading to every inserted or replaced paragraph and every cell in inserted/replaced tables. Default shading is `FFF2CC`.
+Apply change shading to every inserted or replaced analysis paragraph. Default shading is `FFF2CC`. Text-only updates to the existing asset-liability table retain the original cell shading and all other table formatting; `change_shading` is not applied to those cells.
 
 ## Validation
 
 Before completion, verify:
 
 - financial section localized;
-- target unit appears;
-- forbidden non-target unit does not appear in the financial section;
+- target unit appears in the scoped financial-section paragraphs or the shared target asset-liability table;
+- forbidden non-target unit does not appear in those scoped paragraphs or the target table;
 - asset-liability summary table exists;
 - table title contains the unit;
 - table shape is not trivially simplified;
-- change shading exists on paragraphs and tables;
+- change shading exists on inserted or replaced analysis paragraphs;
+- the target table's before/after format fingerprint, including cell fill, is unchanged;
 - fonts are written in OOXML `w:eastAsia` when Python `font.name` cannot read Chinese font names;
 - sample amounts match the metric pack.

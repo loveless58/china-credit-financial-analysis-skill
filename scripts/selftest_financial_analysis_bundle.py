@@ -33,6 +33,22 @@ def valid_bundle() -> dict:
             "asset_liability": {
                 "rows": [
                     {
+                        "metric": "total_liabilities",
+                        "label": "负债合计",
+                        "values": {
+                            "2024": {
+                                "value": "40.00",
+                                "status": "verified",
+                                "source_refs": ["annual_2025"],
+                            },
+                            "2025": {
+                                "value": "60.00",
+                                "status": "verified",
+                                "source_refs": ["annual_2025"],
+                            },
+                        },
+                    },
+                    {
                         "metric": "total_assets",
                         "label": "资产总计",
                         "values": {
@@ -145,6 +161,22 @@ def run_case(name: str, bundle: dict, expected_code: int, directory: Path) -> st
     return None
 
 
+def schema_phase_one_contract_failures() -> list[str]:
+    schema = json.loads(SCHEMA.read_text(encoding="utf-8"))
+    plan_properties = schema["properties"]["docx_write_plan"]["properties"]
+    table_rows = plan_properties["table_rows"]
+    failures: list[str] = []
+    if table_rows.get("additionalProperties") is not False:
+        failures.append("schema: table_rows must reject unknown table keys")
+    if set(table_rows.get("properties", {})) != {"asset_liability"}:
+        failures.append("schema: table_rows must expose only asset_liability")
+    if plan_properties["preserve_asset_liability_table"].get("const") is not True:
+        failures.append(
+            "schema: preserve_asset_liability_table must be constant true"
+        )
+    return failures
+
+
 def main() -> None:
     missing_metric = valid_bundle()
     del missing_metric["financial_tables"]["asset_liability"]["rows"][0]["metric"]
@@ -187,6 +219,45 @@ def main() -> None:
     unknown_pending_field["pending_verification"] = [
         {"issue": "待补充审计报告", "status": "source_missing", "unexpected": True}
     ]
+
+    missing_ratio_input = valid_bundle()
+    missing_ratio_input["ratios"]["asset_liability_ratio"]["inputs"][0][
+        "metric"
+    ] = "not_in_financial_tables"
+
+    blocked_ratio_input = valid_bundle()
+    blocked_ratio_input["financial_tables"]["asset_liability"]["rows"][0][
+        "values"
+    ]["2025"]["status"] = "conflict"
+
+    undeclared_ratio_period = valid_bundle()
+    undeclared_ratio_period["ratios"]["asset_liability_ratio"]["period"] = "2026"
+
+    undeclared_input_period = valid_bundle()
+    undeclared_input_period["ratios"]["asset_liability_ratio"]["inputs"][0][
+        "period"
+    ] = "2026"
+
+    undeclared_table_period = valid_bundle()
+    undeclared_table_period["financial_tables"]["asset_liability"]["rows"][0][
+        "values"
+    ]["2026"] = {
+        "value": "61.00",
+        "status": "verified",
+        "source_refs": ["annual_2025"],
+    }
+
+    unsupported_table_rows = valid_bundle()
+    unsupported_table_rows["docx_write_plan"]["table_rows"]["profit"] = [
+        ["利润表", "2025"],
+        ["净利润", "10.00"],
+    ]
+
+    preserve_false = valid_bundle()
+    preserve_false["docx_write_plan"]["preserve_asset_liability_table"] = False
+
+    empty_table_rows = valid_bundle()
+    empty_table_rows["docx_write_plan"]["table_rows"] = {}
 
     cases = [
         ("valid", valid_bundle(), 0),
@@ -308,6 +379,36 @@ def main() -> None:
             bundle_with_analysis_markdown("截至报告期，公司银行授信额度为100万元。"),
             0,
         ),
+        (
+            "forbidden_approval_quota_without_credit_word",
+            bundle_with_analysis_markdown("建议批复额度100万元。"),
+            1,
+        ),
+        (
+            "forbidden_approval_result_pass",
+            bundle_with_analysis_markdown("审批结论：通过。"),
+            1,
+        ),
+        (
+            "allowed_cross_sentence_non_decision",
+            bundle_with_analysis_markdown("公司授信余额下降。同意调整报表格式。"),
+            0,
+        ),
+        (
+            "allowed_cross_semicolon_negative_word",
+            bundle_with_analysis_markdown("公司授信余额下降；不同意采用旧表格。"),
+            0,
+        ),
+        (
+            "allowed_cross_newline_pass_word",
+            bundle_with_analysis_markdown("公司授信余额下降\n通过格式校验。"),
+            0,
+        ),
+        (
+            "allowed_cross_sentence_amount_word",
+            bundle_with_analysis_markdown("公司授信余额为100万元。建议调整报表格式。"),
+            0,
+        ),
         ("empty_source_metadata", empty_source_metadata, 1),
         ("missing_metric", missing_metric, 1),
         ("missing_ratio_label_period", missing_ratio_label_period, 1),
@@ -321,11 +422,19 @@ def main() -> None:
         ("unknown_ratio_input_field", unknown_ratio_input_field, 1),
         ("unknown_risk_field", unknown_risk_field, 1),
         ("unknown_pending_field", unknown_pending_field, 1),
+        ("missing_ratio_input", missing_ratio_input, 1),
+        ("blocked_ratio_input", blocked_ratio_input, 1),
+        ("undeclared_ratio_period", undeclared_ratio_period, 1),
+        ("undeclared_input_period", undeclared_input_period, 1),
+        ("undeclared_table_period", undeclared_table_period, 1),
+        ("unsupported_table_rows", unsupported_table_rows, 1),
+        ("preserve_false", preserve_false, 1),
+        ("empty_table_rows", empty_table_rows, 0),
     ]
 
     with tempfile.TemporaryDirectory() as temporary_directory:
         directory = Path(temporary_directory)
-        failures: list[str] = []
+        failures = schema_phase_one_contract_failures()
         for name, bundle, expected_code in cases:
             failure = run_case(name, bundle, expected_code, directory)
             if failure:

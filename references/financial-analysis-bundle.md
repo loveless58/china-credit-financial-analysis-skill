@@ -23,16 +23,16 @@
 
 允许的状态为 `verified`、`calculated`、`source_missing`、`unit_missing`、`conflict`、`missing`、`llm_generated_blocked`。只有 `verified` 与 `calculated` 可作为 `analysis_markdown` 正文的数字准入状态；其余状态必须留在 `pending_verification` 或对应的数据项中，不能作为已确认正文事实。
 
-`verified` 财务表数据必须引用 `sources` 中存在的来源 ID。`pending_verification.status` 只能使用非正文状态。
+`verified` 财务表数据必须引用 `sources` 中存在的来源 ID。所有财务表值的期间、ratio 自身期间和 ratio 输入期间都必须属于顶层 `periods`。每个 ratio 输入必须引用 `financial_tables` 中已存在且状态为 `verified` 或 `calculated` 的 `(metric, period)`。`pending_verification.status` 只能使用非正文状态。
 
 ### 授信结论禁入边界
 
-`risk_points.statement` 和 `docx_write_plan.analysis_markdown` 共用同一组具名、保守的禁令模式。规则不是只匹配完整短语，而是将授信语义与决策措辞或决策金额组合判断：
+`risk_points.statement` 和 `docx_write_plan.analysis_markdown` 共用同一组具名、保守的禁令模式。所有类别都先按句号、分号和换行切分为独立窗口，只在单个窗口内组合授信语义、决策措辞或决策金额，不跨窗口拼接：
 
 - 同意类：`同意`、`给予`、`予以`、`批准`、`核准`、`批复` 与“授信”或“授信审批”组合。
 - 否决类：`不建议`、`不同意`、`不予`、`拒绝`、`否决`、`不通过` 与“授信”或“授信审批”组合。
-- 通过类：`通过`、`批准`、`核准` 与“授信”或“授信审批”组合。
-- 额度类：文本先按句子、分号和换行切分为独立窗口，再进行词序无关的组合判断。单一窗口同时出现“授信”语义、金额和 `建议`、`拟定`、`核定`、`确定`、`决定`等金额决策措辞时禁止；或同时出现“授信”语义、`额度`/`限额`语义和上述额度决策措辞时禁止。
+- 通过类：`通过`、`批准`、`核准` 与“授信”“授信审批”或“审批结论”组合。
+- 额度类：单一窗口同时出现“授信”或 `额度`/`限额`语义、金额或额度语义，以及 `建议`、`拟定`、`核定`、`确定`、`决定`、`批复` 等金额决策措辞时禁止。
 
 因此“建议给予授信”“不建议授信”“建议授信100万元”“本次授信建议为100万元”“公司授信额度确定为100万元”均禁止进入两个正文入口。纯事实性描述在不包含审批建议、决定、通过或额度决策措辞时允许准入，例如“公司现有银行授信余额100万元”“公司授信余额较上年下降”“截至报告期，公司银行授信额度为100万元”。不同句、分号段或换行段中的词不会跨窗口组合；事实与决策语义混杂或无法确认时，应记录到 `pending_verification`，而不应写入正文。
 
@@ -41,9 +41,10 @@
 `docx_write_plan` 必须包含 `mode`、`section_start`、`analysis_anchor`、`section_end`、`analysis_markdown`、`table_rows`、`target_unit`、`require_backup`、`preserve_asset_liability_table`、`change_shading`、`output_filename`。
 
 - `mode` 只能是 `insert` 或 `replace`。
-- `require_backup` 必须为 `true`；`change_shading` 为六位十六进制颜色；`output_filename` 必须以 `.docx` 结尾。
+- `require_backup` 和 `preserve_asset_liability_table` 必须为 `true`；`change_shading` 为六位十六进制颜色且只用于新增或替换的分析段落；`output_filename` 必须以 `.docx` 结尾。
 - `analysis_markdown` 是 DOCX 正文的唯一来源。
-- `table_rows` 是模板写回所需的二维矩阵，不替代分析层 `financial_tables`，也不应被下游当作计算或审计依据。
+- Phase 1 的 `table_rows` 为空对象时表示只更新分析正文；需要更新表格时只能包含 `asset_liability` 二维字符串矩阵。它不替代分析层 `financial_tables`，也不应被下游当作计算依据。数字审计仍会逐项核对其数值是否来自 `verified` 或 `calculated` 状态。
+- 资产负债表必须在 `section_start` 与 `section_end` 的 OOXML body 范围内定位；同一章节同时存在合并与本部表时，以最近前置非空段落为 `合并数据：` 的表作为目标。完成章节、表锚点与上下文过滤后，零个或多个候选都阻断写回。
 
 ## 完整合法示例
 
@@ -65,6 +66,22 @@
   "financial_tables": {
     "asset_liability": {
       "rows": [
+        {
+          "metric": "total_liabilities",
+          "label": "负债合计",
+          "values": {
+            "2024": {
+              "value": "40.00",
+              "status": "verified",
+              "source_refs": ["annual_2025"]
+            },
+            "2025": {
+              "value": "60.00",
+              "status": "verified",
+              "source_refs": ["annual_2025"]
+            }
+          }
+        },
         {
           "metric": "total_assets",
           "label": "资产总计",

@@ -261,12 +261,15 @@
         },
         "table_rows": {
           "type": "object",
-          "additionalProperties": {
-            "type": "array",
-            "items": {
+          "additionalProperties": false,
+          "properties": {
+            "asset_liability": {
               "type": "array",
               "items": {
-                "type": "string"
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
               }
             }
           }
@@ -279,7 +282,7 @@
           "const": true
         },
         "preserve_asset_liability_table": {
-          "type": "boolean"
+          "const": true
         },
         "change_shading": {
           "type": "string",

@@ -16,6 +16,7 @@ from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.table import Table
+from docx.text.paragraph import Paragraph
 
 
 DEFAULT_ANCHORS = ("资产负债简表", "资产总计", "负债合计", "利润及利润分配表", "现金流量简表")
@@ -31,6 +32,102 @@ def find_table(document: Document, anchors: list[str]) -> tuple[int, Table]:
         if any(anchor in text for anchor in anchors):
             return index, table
     raise SystemExit(f"financial template table not found; anchors={anchors}")
+
+
+def _document_body_items(document: Document) -> list[Paragraph | Table]:
+    items: list[Paragraph | Table] = []
+    for child in document._body._body.iterchildren():
+        if child.tag == qn("w:p"):
+            items.append(Paragraph(child, document._body))
+        elif child.tag == qn("w:tbl"):
+            items.append(Table(child, document._body))
+    return items
+
+
+def tables_in_section(
+    document: Document,
+    section_start: str,
+    section_end: str,
+) -> list[tuple[int, Table]]:
+    """Return top-level tables bounded by section paragraphs in body order."""
+    items = _document_body_items(document)
+    start_index = next(
+        (
+            index
+            for index, item in enumerate(items)
+            if isinstance(item, Paragraph) and section_start in item.text
+        ),
+        None,
+    )
+    if start_index is None:
+        raise ValueError(f"section start not found: {section_start}")
+    end_index = next(
+        (
+            index
+            for index, item in enumerate(items[start_index + 1 :], start_index + 1)
+            if isinstance(item, Paragraph) and section_end in item.text
+        ),
+        None,
+    )
+    if end_index is None:
+        raise ValueError(f"section end not found after start: {section_end}")
+
+    document_table_indexes = {
+        id(table._tbl): index for index, table in enumerate(document.tables)
+    }
+    scoped: list[tuple[int, Table]] = []
+    for item in items[start_index + 1 : end_index]:
+        if not isinstance(item, Table):
+            continue
+        table_index = document_table_indexes.get(id(item._tbl))
+        if table_index is None:
+            raise ValueError("scoped table is missing from document table index")
+        scoped.append((table_index, item))
+    return scoped
+
+
+def find_table_in_section(
+    document: Document,
+    anchors: list[str],
+    section_start: str,
+    section_end: str,
+    preceding_anchor: str | None = None,
+) -> tuple[int, Table]:
+    """Locate exactly one anchored table inside the requested body section."""
+    anchored_matches = [
+        (index, table)
+        for index, table in tables_in_section(document, section_start, section_end)
+        if any(anchor in table_text(table) for anchor in anchors)
+    ]
+    if len(anchored_matches) == 1:
+        return anchored_matches[0]
+
+    matches = anchored_matches
+    if preceding_anchor is not None:
+        preceding_text: dict[int, str] = {}
+        last_paragraph = ""
+        for item in _document_body_items(document):
+            if isinstance(item, Paragraph):
+                if item.text.strip():
+                    last_paragraph = item.text.strip()
+            else:
+                preceding_text[id(item._tbl)] = last_paragraph
+        contextual_matches = [
+            (index, table)
+            for index, table in anchored_matches
+            if preceding_anchor in preceding_text.get(id(table._tbl), "")
+        ]
+        if len(contextual_matches) == 1:
+            return contextual_matches[0]
+        if contextual_matches:
+            matches = contextual_matches
+    if len(matches) != 1:
+        raise ValueError(
+            "expected exactly one financial template table inside section "
+            f"{section_start!r}..{section_end!r}; found {len(matches)}; "
+            f"anchors={anchors}; preceding_anchor={preceding_anchor!r}"
+        )
+    return matches[0]
 
 
 def text_nodes(cell) -> list:

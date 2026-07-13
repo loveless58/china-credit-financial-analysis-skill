@@ -14,6 +14,8 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt
 
+from preserve_financial_table_format import find_table_in_section
+
 
 SCRIPT = Path(__file__).with_name("preserve_financial_table_format.py")
 
@@ -57,16 +59,14 @@ def cell_fill(cell) -> str | None:
     return shd.get(qn("w:fill")) if shd is not None else None
 
 
-def make_template(path: Path) -> None:
-    doc = Document()
-    doc.add_paragraph("（五）、财务分析")
+def add_asset_table(doc, amount: str = "200"):
     table = doc.add_table(rows=3, cols=3)
     table.style = "Table Grid"
     set_borders(table)
     rows = [
         ["资产负债简表（合并口径，单位：万元）", "", ""],
         ["项目", "2024.12", "2025.12"],
-        ["资产总计", "100", "200"],
+        ["资产总计", "100", amount],
     ]
     for row_index, row in enumerate(rows):
         for col_index, text in enumerate(row):
@@ -78,7 +78,86 @@ def make_template(path: Path) -> None:
             run.font.size = Pt(11)
             run.bold = row_index <= 1
             run._element.get_or_add_rPr().get_or_add_rFonts().set(qn("w:eastAsia"), "仿宋")
+    return table
+
+
+def make_template(path: Path) -> None:
+    doc = Document()
+    doc.add_paragraph("（五）、财务分析")
+    add_asset_table(doc)
+    doc.add_paragraph("（六）、行业分析")
     doc.save(path)
+
+
+def assert_section_scoped_locator(tmp_path: Path) -> None:
+    path = tmp_path / "section-scoped.docx"
+    doc = Document()
+    decoy = add_asset_table(doc, "999")
+    doc.add_paragraph("（五）、财务分析")
+    target = add_asset_table(doc, "200")
+    doc.add_paragraph("（六）、行业分析")
+    doc.save(path)
+
+    loaded = Document(str(path))
+    table_index, found = find_table_in_section(
+        loaded,
+        ["资产负债简表", "资产总计"],
+        "（五）、财务分析",
+        "（六）、行业分析",
+    )
+    assert table_index == 1
+    assert "200" in "\n".join(c.text for r in found.rows for c in r.cells)
+    assert "999" in "\n".join(c.text for r in loaded.tables[0].rows for c in r.cells)
+
+    no_match = Document()
+    no_match.add_paragraph("（五）、财务分析")
+    no_match.add_table(rows=1, cols=1).cell(0, 0).text = "其他表"
+    no_match.add_paragraph("（六）、行业分析")
+    try:
+        find_table_in_section(
+            no_match,
+            ["资产负债简表", "资产总计"],
+            "（五）、财务分析",
+            "（六）、行业分析",
+        )
+    except ValueError as error:
+        assert "found 0" in str(error)
+    else:
+        raise AssertionError("zero scoped candidates were accepted")
+
+    multiple = Document()
+    multiple.add_paragraph("（五）、财务分析")
+    add_asset_table(multiple, "200")
+    add_asset_table(multiple, "300")
+    multiple.add_paragraph("（六）、行业分析")
+    try:
+        find_table_in_section(
+            multiple,
+            ["资产负债简表", "资产总计"],
+            "（五）、财务分析",
+            "（六）、行业分析",
+        )
+    except ValueError as error:
+        assert "found 2" in str(error)
+    else:
+        raise AssertionError("multiple scoped candidates were accepted")
+
+    contextual = Document()
+    contextual.add_paragraph("（五）、财务分析")
+    contextual.add_paragraph("合并数据：")
+    expected_contextual = add_asset_table(contextual, "200")
+    contextual.add_paragraph("本部财务数据：")
+    add_asset_table(contextual, "300")
+    contextual.add_paragraph("（六）、行业分析")
+    contextual_index, contextual_target = find_table_in_section(
+        contextual,
+        ["资产负债简表", "资产总计"],
+        "（五）、财务分析",
+        "（六）、行业分析",
+        preceding_anchor="合并数据",
+    )
+    assert contextual_index == 0
+    assert contextual_target._tbl is expected_contextual._tbl
 
 
 def main() -> int:
@@ -126,6 +205,7 @@ def main() -> int:
         assert target_run.font.size.pt == source_run.font.size.pt == 11
         assert cell_fill(target.cell(2, 2)) == cell_fill(source_table.cell(2, 2)) == "D9EAD3"
         assert target.cell(2, 2).text == "375593"
+        assert_section_scoped_locator(tmp_path)
         print("table format preservation self-test passed")
     return 0
 

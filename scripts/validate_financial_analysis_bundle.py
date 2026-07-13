@@ -27,6 +27,7 @@ PASS_DECISIONS = r"(?:通过|批准|核准)"
 AMOUNT_DECISIONS = r"(?:建议|拟定|核定|确定|决定|批准|核准|批复|给予|予以)"
 MONEY_AMOUNT = r"(?:人民币)?\d+(?:\.\d+)?(?:亿元|万元|元)"
 CREDIT_LIMIT_SEMANTICS = r"(?:额度|限额)"
+APPROVAL_RESULT_SEMANTICS = r"(?:审批|审查)(?:结论)?"
 TEXT_WINDOW_SEPARATOR = re.compile(r"[。！？!?；;\r\n]+")
 CREDIT_SEMANTICS_PATTERN = re.compile(CREDIT_SEMANTICS)
 AMOUNT_DECISIONS_PATTERN = re.compile(AMOUNT_DECISIONS)
@@ -43,7 +44,9 @@ FORBIDDEN_CONCLUSION_PATTERNS = {
     ),
     "通过": re.compile(
         rf"{PASS_DECISIONS}.{{0,8}}{CREDIT_SEMANTICS}|"
-        rf"{CREDIT_SEMANTICS}.{{0,8}}{PASS_DECISIONS}"
+        rf"{CREDIT_SEMANTICS}.{{0,8}}{PASS_DECISIONS}|"
+        rf"{APPROVAL_RESULT_SEMANTICS}.{{0,8}}{PASS_DECISIONS}|"
+        rf"{PASS_DECISIONS}.{{0,8}}{APPROVAL_RESULT_SEMANTICS}"
     ),
     "风险结论": re.compile(r"风险可控"),
 }
@@ -112,6 +115,7 @@ def validate_financial_tables(
     financial_tables: Any,
     sources: Any,
     financial_tables_contract: dict[str, Any],
+    periods: set[str],
 ) -> list[str]:
     if not isinstance(financial_tables, dict):
         return ["financial_tables must be an object"]
@@ -143,6 +147,8 @@ def validate_financial_tables(
                 continue
             for period, item in values.items():
                 item_prefix = f"{row_prefix}.values.{period}"
+                if period not in periods:
+                    errors.append(f"{item_prefix} period is not declared in periods")
                 errors.extend(object_contract_errors(item, value_contract, item_prefix))
                 if not isinstance(item, dict):
                     continue
@@ -160,7 +166,28 @@ def validate_financial_tables(
     return errors
 
 
-def validate_ratios(ratios: Any, ratios_contract: dict[str, Any]) -> list[str]:
+def financial_value_index(financial_tables: Any) -> dict[tuple[str, str], dict[str, Any]]:
+    index: dict[tuple[str, str], dict[str, Any]] = {}
+    if not isinstance(financial_tables, dict):
+        return index
+    for table in financial_tables.values():
+        if not isinstance(table, dict):
+            continue
+        for row in table.get("rows", []):
+            if not isinstance(row, dict) or not is_non_empty_string(row.get("metric")):
+                continue
+            for period, item in row.get("values", {}).items():
+                if isinstance(item, dict):
+                    index[(row["metric"], period)] = item
+    return index
+
+
+def validate_ratios(
+    ratios: Any,
+    ratios_contract: dict[str, Any],
+    periods: set[str],
+    value_index: dict[tuple[str, str], dict[str, Any]],
+) -> list[str]:
     if not isinstance(ratios, dict):
         return ["ratios must be an object"]
 
@@ -177,6 +204,8 @@ def validate_ratios(ratios: Any, ratios_contract: dict[str, Any]) -> list[str]:
                 errors.append(f"{prefix}.{field} must be a non-empty string")
         if ratio.get("status") != "calculated":
             errors.append(f"{prefix}.status must equal calculated")
+        if ratio.get("period") not in periods:
+            errors.append(f"{prefix}.period is not declared in periods")
 
         inputs = ratio.get("inputs")
         if not isinstance(inputs, list) or not inputs:
@@ -190,6 +219,19 @@ def validate_ratios(ratios: Any, ratios_contract: dict[str, Any]) -> list[str]:
             for field in ("metric", "period"):
                 if not is_non_empty_string(input_item.get(field)):
                     errors.append(f"{input_prefix}.{field} must be a non-empty string")
+            metric_period = (input_item.get("metric"), input_item.get("period"))
+            if input_item.get("period") not in periods:
+                errors.append(f"{input_prefix}.period is not declared in periods")
+            referenced = value_index.get(metric_period)
+            if referenced is None:
+                errors.append(
+                    f"{input_prefix} must reference an existing financial_tables value"
+                )
+            elif referenced.get("status") not in BODY_STATUSES:
+                errors.append(
+                    f"{input_prefix} references a non-body status: "
+                    f"{referenced.get('status')}"
+                )
     return errors
 
 
@@ -200,7 +242,10 @@ def text_windows(text: str) -> list[str]:
 
 def contains_forbidden_amount_decision(text: str) -> bool:
     for window in text_windows(text):
-        if not CREDIT_SEMANTICS_PATTERN.search(window):
+        if not (
+            CREDIT_SEMANTICS_PATTERN.search(window)
+            or CREDIT_LIMIT_SEMANTICS_PATTERN.search(window)
+        ):
             continue
         if not AMOUNT_DECISIONS_PATTERN.search(window):
             continue
@@ -214,11 +259,11 @@ def contains_forbidden_amount_decision(text: str) -> bool:
 def forbidden_conclusion_categories(text: Any) -> list[str]:
     if not is_non_empty_string(text):
         return []
-    categories = [
-        category
-        for category, pattern in FORBIDDEN_CONCLUSION_PATTERNS.items()
-        if pattern.search(text)
-    ]
+    categories: list[str] = []
+    for window in text_windows(text):
+        for category, pattern in FORBIDDEN_CONCLUSION_PATTERNS.items():
+            if category not in categories and pattern.search(window):
+                categories.append(category)
     if contains_forbidden_amount_decision(text):
         categories.append("额度")
     return categories
@@ -309,6 +354,9 @@ def validate_docx_write_plan(
     if not isinstance(table_rows, dict):
         errors.append("docx_write_plan.table_rows must be an object")
     else:
+        unknown_table_keys = set(table_rows) - {"asset_liability"}
+        for table_name in sorted(unknown_table_keys):
+            errors.append(f"docx_write_plan.table_rows unknown field: {table_name}")
         for table_name, rows in table_rows.items():
             if not isinstance(rows, list):
                 errors.append(f"docx_write_plan.table_rows.{table_name} must be an array")
@@ -324,8 +372,8 @@ def validate_docx_write_plan(
 
     if docx_write_plan.get("require_backup") is not True:
         errors.append("docx_write_plan.require_backup must equal true")
-    if not isinstance(docx_write_plan.get("preserve_asset_liability_table"), bool):
-        errors.append("docx_write_plan.preserve_asset_liability_table must be a boolean")
+    if docx_write_plan.get("preserve_asset_liability_table") is not True:
+        errors.append("docx_write_plan.preserve_asset_liability_table must equal true")
     change_shading = docx_write_plan.get("change_shading")
     if not is_non_empty_string(change_shading) or not re.fullmatch(
         r"[0-9A-Fa-f]{6}", change_shading
@@ -372,15 +420,24 @@ def validate_bundle(bundle: dict[str, Any], schema: dict[str, Any]) -> list[str]
         is_non_empty_string(period) for period in periods
     ):
         errors.append("periods must be a non-empty array of non-empty strings")
+    period_set = set(periods) if isinstance(periods, list) else set()
     errors.extend(validate_sources(bundle.get("sources"), sources_contract))
     errors.extend(
         validate_financial_tables(
             bundle.get("financial_tables"),
             bundle.get("sources", {}),
             financial_tables_contract,
+            period_set,
         )
     )
-    errors.extend(validate_ratios(bundle.get("ratios"), ratios_contract))
+    errors.extend(
+        validate_ratios(
+            bundle.get("ratios"),
+            ratios_contract,
+            period_set,
+            financial_value_index(bundle.get("financial_tables")),
+        )
+    )
     errors.extend(
         validate_risk_points(
             bundle.get("risk_points"), bundle.get("sources", {}), risk_points_contract

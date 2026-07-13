@@ -10,6 +10,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from copy import deepcopy
 from pathlib import Path
 
 from docx import Document
@@ -19,6 +20,7 @@ from docx.shared import Pt
 from docx.text.paragraph import Paragraph
 
 from backup_docx import backup_path
+import update_financial_docx as updater_module
 from validate_financial_docx import validate_financial_docx
 
 
@@ -270,6 +272,7 @@ def assert_replace_success(source: Path, source_hash_before: str, tmp_path: Path
         assert validation["checks"][key] is True
     assert validation["checks"]["asset_table_target_format_preserved"] is True
     assert validation["checks"]["asset_table_target_text_runs_formatted"] is True
+    assert validation["checks"]["asset_table_first_cell_shading"] == "D9EAD3"
     assert (out_dir / "change_log.md").exists()
     assert (out_dir / "待核验清单.md").exists()
 
@@ -284,6 +287,9 @@ def assert_number_audit_failure(source: Path, tmp_path: Path) -> None:
     assert [finding["number"] for finding in audit["findings"]] == ["999.00"]
     assert len(list(out_dir.glob("*.backup-*.docx"))) == 1
     assert not (out_dir / OUTPUT_FILENAME).exists()
+    pending = (out_dir / "待核验清单.md").read_text(encoding="utf-8")
+    assert "核验受限资产明细" in pending
+    assert "number audit failed" in pending
 
 
 def assert_insert_success(source: Path, tmp_path: Path) -> None:
@@ -514,6 +520,155 @@ def assert_noncontiguous_analysis_rejected(tmp_path: Path) -> None:
     assert "analysis_lines_found" in validation["failed"]
 
 
+def assert_phase1_plan_guard() -> None:
+    plan = valid_bundle()["docx_write_plan"]
+    phase1_asset_liability_rows = updater_module.phase1_asset_liability_rows
+    assert phase1_asset_liability_rows(plan) == table_rows()
+
+    no_table_update = copy.deepcopy(plan)
+    no_table_update["table_rows"] = {}
+    assert phase1_asset_liability_rows(no_table_update) is None
+
+    unsupported = copy.deepcopy(plan)
+    unsupported["table_rows"]["profit"] = [["利润表"]]
+    try:
+        phase1_asset_liability_rows(unsupported)
+    except ValueError as error:
+        assert "unsupported table_rows keys" in str(error)
+    else:
+        raise AssertionError("unsupported Phase 1 table_rows key was accepted")
+
+    preservation_disabled = copy.deepcopy(plan)
+    preservation_disabled["preserve_asset_liability_table"] = False
+    try:
+        phase1_asset_liability_rows(preservation_disabled)
+    except ValueError as error:
+        assert "preserve_asset_liability_table must equal true" in str(error)
+    else:
+        raise AssertionError("disabled asset-liability preservation was accepted")
+
+
+def assert_empty_table_rows_success(tmp_path: Path) -> None:
+    source = tmp_path / "empty-table-rows-source.docx"
+    make_source_docx(source)
+    bundle = valid_bundle()
+    bundle["docx_write_plan"]["table_rows"] = {}
+    out_dir = tmp_path / "empty-table-rows-output"
+    result = run_updater(source, bundle, out_dir)
+    assert result.returncode == 0, result.stderr
+    output = Document(str(out_dir / OUTPUT_FILENAME))
+    assert output.tables[0].cell(2, 2).text == "110.00"
+    validation = json.loads(
+        (out_dir / "validation_result.json").read_text(encoding="utf-8")
+    )
+    assert validation["failed"] == []
+    assert "asset_table_target_format_preserved" not in validation["checks"]
+
+
+def add_decoy_table_before_section(path: Path) -> None:
+    document = Document(str(path))
+    decoy_xml = deepcopy(document.tables[0]._tbl)
+    first_text = next(iter(decoy_xml.iter(qn("w:t"))))
+    first_text.text = "资产负债简表（无关章节，单位：万元）"
+    document._body._body.insert(0, decoy_xml)
+    document.save(str(path))
+
+
+def assert_scoped_table_selection(tmp_path: Path) -> None:
+    source = tmp_path / "scoped-table-source.docx"
+    make_source_docx(source)
+    add_decoy_table_before_section(source)
+    out_dir = tmp_path / "scoped-table-output"
+    result = run_updater(source, valid_bundle(), out_dir)
+    assert result.returncode == 0, result.stderr
+
+    output = Document(str(out_dir / OUTPUT_FILENAME))
+    assert output.tables[0].cell(2, 2).text == "110.00"
+    assert output.tables[1].cell(2, 2).text == "120.00"
+
+    multiple_source = tmp_path / "multiple-scoped-tables.docx"
+    make_source_docx(multiple_source)
+    multiple_doc = Document(str(multiple_source))
+    multiple_doc.tables[0]._tbl.addnext(deepcopy(multiple_doc.tables[0]._tbl))
+    multiple_doc.save(str(multiple_source))
+    multiple_out = tmp_path / "multiple-scoped-output"
+    multiple_result = run_updater(multiple_source, valid_bundle(), multiple_out)
+    assert multiple_result.returncode != 0
+    assert "found 2" in multiple_result.stderr
+    assert len(list(multiple_out.glob("*.backup-*.docx"))) == 1
+    assert not (multiple_out / OUTPUT_FILENAME).exists()
+    multiple_pending = (multiple_out / "待核验清单.md").read_text(encoding="utf-8")
+    assert "found 2" in multiple_pending
+    assert "核验受限资产明细" in multiple_pending
+
+    missing_source = tmp_path / "missing-scoped-table.docx"
+    make_source_docx(missing_source)
+    add_decoy_table_before_section(missing_source)
+    missing_doc = Document(str(missing_source))
+    missing_doc.tables[1].cell(0, 0).text = "其他报表"
+    missing_doc.tables[1].cell(2, 0).text = "其他项目"
+    missing_doc.save(str(missing_source))
+    missing_out = tmp_path / "missing-scoped-output"
+    missing_result = run_updater(missing_source, valid_bundle(), missing_out)
+    assert missing_result.returncode != 0
+    assert "found 0" in missing_result.stderr
+    assert len(list(missing_out.glob("*.backup-*.docx"))) == 1
+    assert not (missing_out / OUTPUT_FILENAME).exists()
+    missing_pending = (missing_out / "待核验清单.md").read_text(encoding="utf-8")
+    assert "found 0" in missing_pending
+    assert "核验受限资产明细" in missing_pending
+
+
+def assert_scoped_table_unit_validation(tmp_path: Path) -> None:
+    forbidden_docx = tmp_path / "forbidden-table-unit.docx"
+    make_source_docx(forbidden_docx)
+    forbidden_doc = Document(str(forbidden_docx))
+    forbidden_doc.tables[0].cell(0, 0).text = "资产负债简表（合并口径，单位：亿元）"
+    forbidden_doc.save(str(forbidden_docx))
+    forbidden_validation = validate_financial_docx(
+        docx=forbidden_docx,
+        section_start=SECTION_START,
+        section_end=SECTION_END,
+        target_unit="万元",
+        forbidden_units=["亿元"],
+        expected_shading="FFF2CC",
+        min_asset_table_rows=20,
+    )
+    assert forbidden_validation["checks"]["forbidden_unit_absent_in_section"] is False
+
+    unrelated_docx = tmp_path / "unrelated-target-unit.docx"
+    make_source_docx(unrelated_docx)
+    unrelated_doc = Document(str(unrelated_docx))
+    unrelated_doc.tables[0].cell(0, 0).text = "资产负债简表（合并口径）"
+    unrelated_doc.save(str(unrelated_docx))
+    add_decoy_table_before_section(unrelated_docx)
+    unrelated_validation = validate_financial_docx(
+        docx=unrelated_docx,
+        section_start=SECTION_START,
+        section_end=SECTION_END,
+        target_unit="万元",
+        forbidden_units=["亿元"],
+        expected_shading="FFF2CC",
+        min_asset_table_rows=20,
+    )
+    assert unrelated_validation["checks"]["target_unit_present"] is False
+
+
+def assert_pending_written_after_anchor_failure(tmp_path: Path) -> None:
+    source = tmp_path / "anchor-failure-source.docx"
+    make_source_docx(source)
+    bundle = valid_bundle()
+    bundle["docx_write_plan"]["analysis_anchor"] = "不存在的正文锚点"
+    out_dir = tmp_path / "anchor-failure-output"
+    result = run_updater(source, bundle, out_dir)
+    assert result.returncode != 0
+    assert len(list(out_dir.glob("*.backup-*.docx"))) == 1
+    assert not (out_dir / OUTPUT_FILENAME).exists()
+    pending = (out_dir / "待核验清单.md").read_text(encoding="utf-8")
+    assert "核验受限资产明细" in pending
+    assert "不存在的正文锚点" in pending or "analysis anchor" in pending
+
+
 def assert_table_format_fingerprint_detects_loss(tmp_path: Path) -> None:
     from update_financial_docx import table_format_fingerprint
 
@@ -545,6 +700,16 @@ def run_selected_case(case: str, tmp_path: Path) -> None:
         assert_unsafe_empty_text_node_handled(tmp_path)
     elif case == "noncontiguous-analysis":
         assert_noncontiguous_analysis_rejected(tmp_path)
+    elif case == "phase1-plan-guard":
+        assert_phase1_plan_guard()
+    elif case == "empty-table-rows":
+        assert_empty_table_rows_success(tmp_path)
+    elif case == "scoped-table-selection":
+        assert_scoped_table_selection(tmp_path)
+    elif case == "scoped-table-units":
+        assert_scoped_table_unit_validation(tmp_path)
+    elif case == "pending-after-failure":
+        assert_pending_written_after_anchor_failure(tmp_path)
     else:
         raise ValueError(f"unknown self-test case: {case}")
 
@@ -574,6 +739,11 @@ def main() -> int:
         assert_table_format_fingerprint_detects_loss(tmp_path)
         assert_unsafe_empty_text_node_handled(tmp_path)
         assert_noncontiguous_analysis_rejected(tmp_path)
+        assert_phase1_plan_guard()
+        assert_empty_table_rows_success(tmp_path)
+        assert_scoped_table_selection(tmp_path)
+        assert_scoped_table_unit_validation(tmp_path)
+        assert_pending_written_after_anchor_failure(tmp_path)
 
     print("financial DOCX update self-test passed")
     return 0

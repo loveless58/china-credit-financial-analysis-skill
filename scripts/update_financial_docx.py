@@ -21,7 +21,7 @@ if __package__:
         insert_analysis_body,
         replace_analysis_body,
     )
-    from .preserve_financial_table_format import fill_table, find_table
+    from .preserve_financial_table_format import fill_table, find_table_in_section
     from .validate_financial_analysis_bundle import validate_bundle
     from .validate_financial_docx import validate_financial_docx
 else:
@@ -29,7 +29,7 @@ else:
     from backup_docx import backup_path, create_backup
     from export_change_log import write_change_log
     from insert_financial_analysis import insert_analysis_body, replace_analysis_body
-    from preserve_financial_table_format import fill_table, find_table
+    from preserve_financial_table_format import fill_table, find_table_in_section
     from validate_financial_analysis_bundle import validate_bundle
     from validate_financial_docx import validate_financial_docx
 
@@ -76,7 +76,11 @@ def reject_out_dir_inside_skill_repo(out_dir: Path) -> None:
         )
 
 
-def write_pending_markdown(path: Path, pending: list[dict[str, Any]]) -> Path:
+def write_pending_markdown(
+    path: Path,
+    pending: list[dict[str, Any]],
+    runtime_failures: list[str] | None = None,
+) -> Path:
     lines = ["# 待核验清单", ""]
     if pending:
         lines.extend(
@@ -84,6 +88,9 @@ def write_pending_markdown(path: Path, pending: list[dict[str, Any]]) -> Path:
         )
     else:
         lines.append("- 无")
+    if runtime_failures:
+        lines.extend(["", "## 运行失败原因", ""])
+        lines.extend(f"- {failure}" for failure in runtime_failures)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 
@@ -152,6 +159,34 @@ def _validate_table_dimensions(table, rows: list[list[str]]) -> None:
                     f"data={len(row)} template={template_col_count}"
                 ],
             )
+
+
+def phase1_asset_liability_rows(
+    plan: dict[str, Any],
+) -> list[list[str]] | None:
+    if plan.get("preserve_asset_liability_table") is not True:
+        raise ValueError("preserve_asset_liability_table must equal true")
+    table_rows = plan.get("table_rows")
+    if not isinstance(table_rows, dict):
+        raise ValueError("table_rows must be an object")
+    unsupported = set(table_rows) - {"asset_liability"}
+    if unsupported:
+        raise ValueError(
+            "unsupported table_rows keys: " + ", ".join(sorted(unsupported))
+        )
+    if "asset_liability" not in table_rows:
+        return None
+    rows = table_rows["asset_liability"]
+    if not isinstance(rows, list):
+        raise ValueError("table_rows.asset_liability must be an array")
+    if not all(
+        isinstance(row, list) and all(isinstance(cell, str) for cell in row)
+        for row in rows
+    ):
+        raise ValueError(
+            "table_rows.asset_liability must be a two-dimensional string array"
+        )
+    return rows
 
 
 def _has_reusable_explicit_format(run) -> bool:
@@ -273,6 +308,7 @@ def update_financial_docx(
     errors = validate_bundle(bundle, schema)
     if errors:
         raise UpdateBlocked("bundle validation failed", errors)
+    asset_liability_rows = phase1_asset_liability_rows(bundle["docx_write_plan"])
 
     reject_out_dir_inside_skill_repo(out_dir)
     out_dir = out_dir.resolve()
@@ -283,124 +319,135 @@ def update_financial_docx(
     planned_backup = backup_path(source_docx, out_dir, reserved=output)
     _ensure_distinct_document_paths(source_docx, output, planned_backup)
     backup = create_backup(source_docx, planned_backup)
-    _ensure_distinct_document_paths(source_docx, output, backup)
 
-    findings = audit_text(plan["analysis_markdown"], [bundle])
-    table_text = "\n".join(
-        str(cell)
-        for rows in plan["table_rows"].values()
-        for row in rows
-        for cell in row
-    )
-    findings.extend(audit_text(table_text, [bundle]))
-    number_audit = write_json(out_dir / "number_audit.json", {"findings": findings})
-    if findings:
-        raise UpdateBlocked("number audit failed", findings)
+    try:
+        _ensure_distinct_document_paths(source_docx, output, backup)
+        findings = audit_text(plan["analysis_markdown"], [bundle])
+        if asset_liability_rows is not None:
+            table_text = "\n".join(
+                str(cell) for row in asset_liability_rows for cell in row
+            )
+            findings.extend(audit_text(table_text, [bundle]))
+        number_audit = write_json(out_dir / "number_audit.json", {"findings": findings})
+        if findings:
+            raise UpdateBlocked("number audit failed", findings)
 
-    document = Document(str(source_docx))
-    asset_table_index = None
-    expected_table_format = None
-    asset_liability_rows = None
-    if "asset_liability" in plan["table_rows"]:
-        asset_table_index, table = find_table(
-            document, ["资产负债简表", "资产总计"]
+        document = Document(str(source_docx))
+        asset_table_index, table = find_table_in_section(
+            document,
+            ["资产负债简表", "资产总计"],
+            plan["section_start"],
+            plan["section_end"],
+            preceding_anchor="合并数据",
         )
-        asset_liability_rows = plan["table_rows"]["asset_liability"]
-        _validate_table_dimensions(table, asset_liability_rows)
-        expected_table_format = table_format_fingerprint(
-            table, asset_liability_rows
-        )
-        _prepare_empty_formatted_cells(table, asset_liability_rows)
-        fill_table(table, asset_liability_rows)
+        expected_table_format = None
+        if asset_liability_rows is not None:
+            _validate_table_dimensions(table, asset_liability_rows)
+            expected_table_format = table_format_fingerprint(
+                table, asset_liability_rows
+            )
+            _prepare_empty_formatted_cells(table, asset_liability_rows)
+            fill_table(table, asset_liability_rows)
 
-    if plan["mode"] == "replace":
-        location = replace_analysis_body(
-            document=document,
-            section_start=plan["section_start"],
-            analysis_anchor=plan["analysis_anchor"],
-            section_end=plan["section_end"],
-            analysis_markdown=plan["analysis_markdown"],
-            shading=plan["change_shading"],
-        )
-    else:
-        location = insert_analysis_body(
-            document=document,
-            section_start=plan["section_start"],
-            analysis_anchor=plan["analysis_anchor"],
-            section_end=plan["section_end"],
-            analysis_markdown=plan["analysis_markdown"],
-            shading=plan["change_shading"],
-        )
-    _safe_output_path(out_dir, plan["output_filename"], source_docx)
-    _ensure_distinct_document_paths(source_docx, output, backup)
-    document.save(str(output))
+        if plan["mode"] == "replace":
+            location = replace_analysis_body(
+                document=document,
+                section_start=plan["section_start"],
+                analysis_anchor=plan["analysis_anchor"],
+                section_end=plan["section_end"],
+                analysis_markdown=plan["analysis_markdown"],
+                shading=plan["change_shading"],
+            )
+        else:
+            location = insert_analysis_body(
+                document=document,
+                section_start=plan["section_start"],
+                analysis_anchor=plan["analysis_anchor"],
+                section_end=plan["section_end"],
+                analysis_markdown=plan["analysis_markdown"],
+                shading=plan["change_shading"],
+            )
+        _safe_output_path(out_dir, plan["output_filename"], source_docx)
+        _ensure_distinct_document_paths(source_docx, output, backup)
+        document.save(str(output))
 
-    table_format_preserved = None
-    table_text_runs_formatted = None
-    if expected_table_format is not None:
-        saved_document = Document(str(output))
-        if asset_table_index is not None and asset_table_index < len(saved_document.tables):
-            saved_table = saved_document.tables[asset_table_index]
+        table_format_preserved = None
+        table_text_runs_formatted = None
+        if asset_liability_rows is not None:
+            saved_document = Document(str(output))
+            saved_table_index, saved_table = find_table_in_section(
+                saved_document,
+                ["资产负债简表", "资产总计"],
+                plan["section_start"],
+                plan["section_end"],
+                preceding_anchor="合并数据",
+            )
             table_format_preserved = (
-                table_format_fingerprint(saved_table, asset_liability_rows)
+                saved_table_index == asset_table_index
+                and table_format_fingerprint(saved_table, asset_liability_rows)
                 == expected_table_format
             )
             table_text_runs_formatted = table_text_runs_have_explicit_format(
                 saved_table, asset_liability_rows
             )
-        else:
-            table_format_preserved = False
-            table_text_runs_formatted = False
 
-    validation = validate_financial_docx(
-        docx=output,
-        section_start=plan["section_start"],
-        section_end=plan["section_end"],
-        target_unit=plan["target_unit"],
-        forbidden_units=["亿元"] if plan["target_unit"] == "万元" else [],
-        expected_shading=plan["change_shading"],
-        body_font="仿宋_GB2312",
-        body_size=14,
-        min_asset_table_rows=20,
-        allow_codex_marker=plan["mode"] == "insert",
-        analysis_anchor=plan["analysis_anchor"],
-        expected_analysis_lines=plan["analysis_markdown"].splitlines(),
-    )
-    if table_format_preserved is not None:
-        validation["checks"]["asset_table_target_format_preserved"] = (
-            table_format_preserved
+        validation = validate_financial_docx(
+            docx=output,
+            section_start=plan["section_start"],
+            section_end=plan["section_end"],
+            target_unit=plan["target_unit"],
+            forbidden_units=["亿元"] if plan["target_unit"] == "万元" else [],
+            expected_shading=plan["change_shading"],
+            body_font="仿宋_GB2312",
+            body_size=14,
+            min_asset_table_rows=20,
+            allow_codex_marker=plan["mode"] == "insert",
+            analysis_anchor=plan["analysis_anchor"],
+            expected_analysis_lines=plan["analysis_markdown"].splitlines(),
+            asset_table_preceding_anchor="合并数据",
         )
-        if not table_format_preserved:
-            validation["failed"].append("asset_table_target_format_preserved")
-    if table_text_runs_formatted is not None:
-        validation["checks"]["asset_table_target_text_runs_formatted"] = (
-            table_text_runs_formatted
-        )
-        if not table_text_runs_formatted:
-            validation["failed"].append(
-                "asset_table_target_text_runs_formatted"
+        if table_format_preserved is not None:
+            validation["checks"]["asset_table_target_format_preserved"] = (
+                table_format_preserved
             )
-    validation_result = write_json(
-        out_dir / "validation_result.json", validation
-    )
-    pending_path = write_pending_markdown(
-        out_dir / "待核验清单.md", bundle["pending_verification"]
-    )
-    change_log = write_change_log(
-        out=out_dir / "change_log.md",
-        original=source_docx,
-        workspace_copy=source_docx,
-        backup=backup,
-        output=output,
-        mode=plan["mode"],
-        location=location,
-        sources=[source["name"] for source in bundle["sources"].values()],
-        pending=[item["issue"] for item in bundle["pending_verification"]],
-        table_preservation="original OOXML text-only update",
-        validation_failed=list(validation["failed"]),
-    )
-    if validation["failed"]:
-        raise UpdateFailed("DOCX validation failed", list(validation["failed"]))
+            if not table_format_preserved:
+                validation["failed"].append(
+                    "asset_table_target_format_preserved"
+                )
+        if table_text_runs_formatted is not None:
+            validation["checks"]["asset_table_target_text_runs_formatted"] = (
+                table_text_runs_formatted
+            )
+            if not table_text_runs_formatted:
+                validation["failed"].append(
+                    "asset_table_target_text_runs_formatted"
+                )
+        validation_result = write_json(out_dir / "validation_result.json", validation)
+        pending_path = write_pending_markdown(
+            out_dir / "待核验清单.md", bundle["pending_verification"]
+        )
+        change_log = write_change_log(
+            out=out_dir / "change_log.md",
+            original=source_docx,
+            workspace_copy=source_docx,
+            backup=backup,
+            output=output,
+            mode=plan["mode"],
+            location=location,
+            sources=[source["name"] for source in bundle["sources"].values()],
+            pending=[item["issue"] for item in bundle["pending_verification"]],
+            table_preservation="original OOXML text-only update",
+            validation_failed=list(validation["failed"]),
+        )
+        if validation["failed"]:
+            raise UpdateFailed("DOCX validation failed", list(validation["failed"]))
+    except Exception as error:
+        write_pending_markdown(
+            out_dir / "待核验清单.md",
+            bundle["pending_verification"],
+            runtime_failures=[str(error)],
+        )
+        raise
 
     return {
         "backup": str(backup.resolve()),

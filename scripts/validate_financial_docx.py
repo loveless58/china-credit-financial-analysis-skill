@@ -11,6 +11,19 @@ from pathlib import Path
 from docx import Document
 from docx.oxml.ns import qn
 
+if __package__:
+    from .preserve_financial_table_format import (
+        find_table_in_section,
+        table_text,
+        tables_in_section,
+    )
+else:
+    from preserve_financial_table_format import (
+        find_table_in_section,
+        table_text,
+        tables_in_section,
+    )
+
 
 CODEX_INSERT_MARKER = "【Codex财务分析更新建议】"
 
@@ -28,10 +41,6 @@ def cell_shade(cell) -> str | None:
 def east_asia_font(run) -> str | None:
     r_fonts = run._element.get_or_add_rPr().rFonts
     return r_fonts.get(qn("w:eastAsia")) if r_fonts is not None else None
-
-
-def table_text(table) -> str:
-    return "\n".join(cell.text for row in table.rows for cell in row.cells)
 
 
 def find_section(paragraphs: list[str], start_anchor: str, end_anchor: str) -> tuple[int, int]:
@@ -146,6 +155,7 @@ def validate_financial_docx(
     allow_codex_marker: bool = False,
     analysis_anchor: str | None = None,
     expected_analysis_lines: list[str] | None = None,
+    asset_table_preceding_anchor: str | None = None,
 ) -> dict[str, object]:
     docx = docx.resolve()
     if not docx.is_file() or docx.suffix.lower() != ".docx":
@@ -155,22 +165,25 @@ def validate_financial_docx(
     para_texts = [paragraph.text for paragraph in doc.paragraphs]
     start, end = find_section(para_texts, section_start, section_end)
     section_text = "\n".join(para_texts[start:end])
-    financial_tables = [
-        table
-        for table in doc.tables
-        if any(
-            anchor in table_text(table)
-            for anchor in ("资产负债简表", "资产总计", "财务指标")
+    scoped_tables = tables_in_section(doc, section_start, section_end)
+    asset_table_error = None
+    try:
+        _, asset_table = find_table_in_section(
+            doc,
+            ["资产负债简表", "资产总计"],
+            section_start,
+            section_end,
+            preceding_anchor=asset_table_preceding_anchor,
         )
-    ]
-    asset_tables = [
-        table
-        for table in financial_tables
-        if "资产负债简表" in table_text(table) or "资产总计" in table_text(table)
-    ]
+        asset_tables = [asset_table]
+    except ValueError as error:
+        asset_tables = []
+        asset_table_error = str(error)
     indicator_tables = [
-        table for table in financial_tables if "财务指标" in table_text(table)
+        table for _, table in scoped_tables if "财务指标" in table_text(table)
     ]
+    scoped_table_text = table_text(asset_tables[0]) if asset_tables else ""
+    scoped_financial_text = "\n".join((section_text, scoped_table_text))
     shaded_paragraphs = [
         paragraph
         for paragraph in doc.paragraphs[start:end]
@@ -214,12 +227,12 @@ def validate_financial_docx(
     checks: dict[str, object] = {
         "docx_exists": True,
         "financial_section_found": start < end,
-        "target_unit_present": target_unit in section_text
-        or any(target_unit in table_text(table) for table in financial_tables),
+        "target_unit_present": target_unit in scoped_financial_text,
         "forbidden_unit_absent_in_section": not any(
-            unit in section_text for unit in forbidden_units
+            unit in scoped_financial_text for unit in forbidden_units
         ),
         "asset_liability_table_found": bool(asset_tables),
+        "asset_liability_table_location_error": asset_table_error,
         "asset_liability_table_rows": len(asset_tables[0].rows) if asset_tables else 0,
         "asset_liability_table_cols": len(asset_tables[0].columns) if asset_tables else 0,
         "asset_liability_table_not_too_simple": bool(asset_tables)

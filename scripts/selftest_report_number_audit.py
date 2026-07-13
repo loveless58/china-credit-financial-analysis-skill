@@ -78,6 +78,67 @@ def main() -> None:
     plan_findings = audit_text(plan_only_number_bundle["docx_write_plan"]["analysis_markdown"], [plan_only_number_bundle])
     assert [item["number"] for item in plan_findings] == ["777.00"]
 
+    regression_failures: list[str] = []
+    blocked_status_values = {
+        "source_missing": "771.00",
+        "unit_missing": "772.00",
+        "conflict": "773.00",
+        "missing": "774.00",
+        "llm_generated_blocked": "775.00",
+    }
+    for status, value in blocked_status_values.items():
+        blocked_bundle = copy.deepcopy(bundle)
+        blocked_bundle["financial_tables"]["asset_liability"]["rows"][0][
+            "values"
+        ]["2025"] = {
+            "value": value,
+            "status": status,
+            "source_refs": [],
+        }
+        for surface, text in (
+            ("analysis body", f"负债合计为{value}万元。"),
+            ("table_rows", f"负债合计\n{value}"),
+        ):
+            actual = [
+                item["number"] for item in audit_text(text, [blocked_bundle])
+            ]
+            if actual != [value]:
+                regression_failures.append(
+                    f"{status} authorized on {surface}: findings={actual!r}"
+                )
+
+    undeclared_year_findings = audit_text(
+        "截至2026年末，总资产为120.00万元。", [bundle]
+    )
+    if [item["number"] for item in undeclared_year_findings] != ["2026"]:
+        regression_failures.append(
+            "bundle audit authorized undeclared contextual year 2026"
+        )
+    year_as_metric_bundle = copy.deepcopy(bundle)
+    year_as_metric_bundle["financial_tables"]["asset_liability"]["rows"].append(
+        {
+            "metric": "coincidental_numeric_value",
+            "label": "巧合数值",
+            "values": {
+                "2025": {
+                    "value": "2026",
+                    "status": "calculated",
+                    "source_refs": [],
+                }
+            },
+        }
+    )
+    year_as_metric_findings = audit_text(
+        "截至2026年末，总资产为120.00万元。", [year_as_metric_bundle]
+    )
+    if [item["number"] for item in year_as_metric_findings] != ["2026"]:
+        regression_failures.append(
+            "bundle audit authorized undeclared year through a metric value"
+        )
+    assert audit_text("截至2025年末，总资产为120.00万元。", [bundle]) == []
+    assert audit_text("截至2026年末，总资产为120.00万元。", [legacy_payload]) == []
+    assert not regression_failures, "\n".join(regression_failures)
+
     print("selftest_report_number_audit: passed")
 
 
