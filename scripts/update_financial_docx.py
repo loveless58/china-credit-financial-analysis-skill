@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import tempfile
 import sys
 from pathlib import Path
 from typing import Any
@@ -19,6 +20,7 @@ if __package__:
     from .export_change_log import write_change_log
     from .insert_financial_analysis import (
         insert_analysis_body,
+        locate_financial_section_anchors,
         replace_analysis_body,
     )
     from .preserve_financial_table_format import fill_table, find_table_in_section
@@ -28,7 +30,11 @@ else:
     from audit_report_numbers import audit_text
     from backup_docx import backup_path, create_backup
     from export_change_log import write_change_log
-    from insert_financial_analysis import insert_analysis_body, replace_analysis_body
+    from insert_financial_analysis import (
+        insert_analysis_body,
+        locate_financial_section_anchors,
+        replace_analysis_body,
+    )
     from preserve_financial_table_format import fill_table, find_table_in_section
     from validate_financial_analysis_bundle import validate_bundle
     from validate_financial_docx import validate_financial_docx
@@ -140,6 +146,16 @@ def _safe_output_path(out_dir: Path, output_filename: str, source: Path) -> Path
             [str(output), str(source.resolve())],
         )
     return output
+
+
+def _staging_output_path(output: Path) -> Path:
+    with tempfile.NamedTemporaryFile(
+        dir=output.parent,
+        prefix=f".{output.name}.staging-",
+        suffix=".docx",
+        delete=False,
+    ) as file_handle:
+        return Path(file_handle.name)
 
 
 def _validate_table_dimensions(table, rows: list[list[str]]) -> None:
@@ -269,11 +285,12 @@ def _element_xml(element) -> str | None:
 
 def table_format_fingerprint(table, rows: list[list[str]]) -> dict[str, object]:
     cells = []
-    for row_index, row in enumerate(rows):
-        for col_index, value in enumerate(row):
-            if not str(value):
+    seen = set()
+    for row_index, row in enumerate(table.rows):
+        for col_index, cell in enumerate(row.cells):
+            if cell._tc in seen:
                 continue
-            cell = table.cell(row_index, col_index)
+            seen.add(cell._tc)
             cells.append(
                 {
                     "row": row_index,
@@ -295,6 +312,17 @@ def table_format_fingerprint(table, rows: list[list[str]]) -> dict[str, object]:
         "table_properties": _element_xml(table._tbl.tblPr),
         "cells": cells,
     }
+
+
+def planned_empty_cells_are_empty(table, rows: list[list[str]]) -> bool:
+    for row_index, row in enumerate(rows):
+        for col_index, value in enumerate(row):
+            if str(value):
+                continue
+            cell = table.cell(row_index, col_index)
+            if any((node.text or "") for node in cell._tc.iter(qn("w:t"))):
+                return False
+    return True
 
 
 def update_financial_docx(
@@ -319,6 +347,11 @@ def update_financial_docx(
     planned_backup = backup_path(source_docx, out_dir, reserved=output)
     _ensure_distinct_document_paths(source_docx, output, planned_backup)
     backup = create_backup(source_docx, planned_backup)
+    number_audit_path = out_dir / "number_audit.json"
+    validation_result_path = out_dir / "validation_result.json"
+    pending_output_path = out_dir / "待核验清单.md"
+    write_json(number_audit_path, {"findings": []})
+    staging: Path | None = None
 
     try:
         _ensure_distinct_document_paths(source_docx, output, backup)
@@ -328,11 +361,17 @@ def update_financial_docx(
                 str(cell) for row in asset_liability_rows for cell in row
             )
             findings.extend(audit_text(table_text, [bundle]))
-        number_audit = write_json(out_dir / "number_audit.json", {"findings": findings})
+        number_audit = write_json(number_audit_path, {"findings": findings})
         if findings:
             raise UpdateBlocked("number audit failed", findings)
 
         document = Document(str(source_docx))
+        locate_financial_section_anchors(
+            document,
+            plan["section_start"],
+            plan["analysis_anchor"],
+            plan["section_end"],
+        )
         asset_table_index, table = find_table_in_section(
             document,
             ["资产负债简表", "资产总计"],
@@ -369,12 +408,14 @@ def update_financial_docx(
             )
         _safe_output_path(out_dir, plan["output_filename"], source_docx)
         _ensure_distinct_document_paths(source_docx, output, backup)
-        document.save(str(output))
+        staging = _staging_output_path(output)
+        document.save(str(staging))
 
         table_format_preserved = None
         table_text_runs_formatted = None
+        planned_empty_cells_empty = None
         if asset_liability_rows is not None:
-            saved_document = Document(str(output))
+            saved_document = Document(str(staging))
             saved_table_index, saved_table = find_table_in_section(
                 saved_document,
                 ["资产负债简表", "资产总计"],
@@ -390,9 +431,12 @@ def update_financial_docx(
             table_text_runs_formatted = table_text_runs_have_explicit_format(
                 saved_table, asset_liability_rows
             )
+            planned_empty_cells_empty = planned_empty_cells_are_empty(
+                saved_table, asset_liability_rows
+            )
 
         validation = validate_financial_docx(
-            docx=output,
+            docx=staging,
             section_start=plan["section_start"],
             section_end=plan["section_end"],
             target_unit=plan["target_unit"],
@@ -422,9 +466,17 @@ def update_financial_docx(
                 validation["failed"].append(
                     "asset_table_target_text_runs_formatted"
                 )
-        validation_result = write_json(out_dir / "validation_result.json", validation)
+        if planned_empty_cells_empty is not None:
+            validation["checks"]["asset_table_planned_empty_cells_empty"] = (
+                planned_empty_cells_empty
+            )
+            if not planned_empty_cells_empty:
+                validation["failed"].append(
+                    "asset_table_planned_empty_cells_empty"
+                )
+        validation_result = write_json(validation_result_path, validation)
         pending_path = write_pending_markdown(
-            out_dir / "待核验清单.md", bundle["pending_verification"]
+            pending_output_path, bundle["pending_verification"]
         )
         change_log = write_change_log(
             out=out_dir / "change_log.md",
@@ -441,22 +493,32 @@ def update_financial_docx(
         )
         if validation["failed"]:
             raise UpdateFailed("DOCX validation failed", list(validation["failed"]))
+        _safe_output_path(out_dir, plan["output_filename"], source_docx)
+        result = {
+            "backup": str(backup.resolve()),
+            "output": str(output.resolve()),
+            "number_audit": str(number_audit.resolve()),
+            "validation_result": str(validation_result.resolve()),
+            "change_log": str(change_log.resolve()),
+            "pending_verification": str(pending_path.resolve()),
+        }
+        staging.replace(output)
+        staging = None
+        return result
     except Exception as error:
+        if staging is not None:
+            staging.unlink(missing_ok=True)
+        if not validation_result_path.exists():
+            write_json(
+                validation_result_path,
+                {"checks": {}, "failed": [str(error)]},
+            )
         write_pending_markdown(
-            out_dir / "待核验清单.md",
+            pending_output_path,
             bundle["pending_verification"],
             runtime_failures=[str(error)],
         )
         raise
-
-    return {
-        "backup": str(backup.resolve()),
-        "output": str(output.resolve()),
-        "number_audit": str(number_audit.resolve()),
-        "validation_result": str(validation_result.resolve()),
-        "change_log": str(change_log.resolve()),
-        "pending_verification": str(pending_path.resolve()),
-    }
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:

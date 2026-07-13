@@ -12,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 VALIDATOR = ROOT / "scripts" / "validate_financial_analysis_bundle.py"
 SCHEMA = ROOT / "schemas" / "financial_analysis_bundle.schema.json"
+REFERENCE = ROOT / "references" / "financial-analysis-bundle.md"
 
 
 def valid_bundle() -> dict:
@@ -123,7 +124,13 @@ def bundle_with_analysis_markdown(analysis_markdown: str) -> dict:
     return bundle
 
 
-def run_case(name: str, bundle: dict, expected_code: int, directory: Path) -> str | None:
+def run_case(
+    name: str,
+    bundle: dict,
+    expected_code: int,
+    directory: Path,
+    expected_errors: list[str] | None = None,
+) -> str | None:
     bundle_path = directory / f"{name}.json"
     result_path = directory / f"{name}.result.json"
     bundle_path.write_text(json.dumps(bundle, ensure_ascii=False), encoding="utf-8")
@@ -158,6 +165,8 @@ def run_case(name: str, bundle: dict, expected_code: int, directory: Path) -> st
         return f"{name}: {result!r}"
     if expected_code != 0 and (result.get("valid") is not False or not result.get("errors")):
         return f"{name}: {result!r}"
+    if expected_errors is not None and result.get("errors") != expected_errors:
+        return f"{name}: expected errors {expected_errors!r}, got {result.get('errors')!r}"
     return None
 
 
@@ -175,6 +184,16 @@ def schema_phase_one_contract_failures() -> list[str]:
             "schema: preserve_asset_liability_table must be constant true"
         )
     return failures
+
+
+def reference_contract_failures() -> list[str]:
+    reference = REFERENCE.read_text(encoding="utf-8")
+    required_statement = (
+        "Phase 1 中，`(metric, period)` 在整个 `financial_tables` 范围内全局唯一"
+    )
+    if required_statement not in reference:
+        return ["reference: financial_tables metric+period must be globally unique"]
+    return []
 
 
 def main() -> None:
@@ -258,6 +277,23 @@ def main() -> None:
 
     empty_table_rows = valid_bundle()
     empty_table_rows["docx_write_plan"]["table_rows"] = {}
+
+    duplicate_metric_period = valid_bundle()
+    duplicate_metric_period["financial_tables"]["profit"] = {
+        "rows": [
+            {
+                "metric": "total_assets",
+                "label": "资产总计（重复）",
+                "values": {
+                    "2025": {
+                        "value": "121.00",
+                        "status": "verified",
+                        "source_refs": ["annual_2025"],
+                    }
+                },
+            }
+        ]
+    }
 
     cases = [
         ("valid", valid_bundle(), 0),
@@ -432,11 +468,92 @@ def main() -> None:
         ("empty_table_rows", empty_table_rows, 0),
     ]
 
+    exact_error_cases = [
+        (
+            "forbidden_approval_result_agree_risk",
+            bundle_with_risk_statement("审批结论：同意。"),
+            [
+                "risk_points[0].statement contains forbidden conclusion categories: 同意"
+            ],
+        ),
+        (
+            "forbidden_approval_result_agree_analysis",
+            bundle_with_analysis_markdown("审批结论：同意。"),
+            [
+                "docx_write_plan.analysis_markdown contains forbidden conclusion categories: 同意"
+            ],
+        ),
+        (
+            "forbidden_approval_result_veto_risk",
+            bundle_with_risk_statement("审批结论：否决。"),
+            [
+                "risk_points[0].statement contains forbidden conclusion categories: 否决"
+            ],
+        ),
+        (
+            "forbidden_approval_result_veto_analysis",
+            bundle_with_analysis_markdown("审批结论：否决。"),
+            [
+                "docx_write_plan.analysis_markdown contains forbidden conclusion categories: 否决"
+            ],
+        ),
+        (
+            "forbidden_approval_result_disagree_risk",
+            bundle_with_risk_statement("审批结论：不同意。"),
+            [
+                "risk_points[0].statement contains forbidden conclusion categories: 否决"
+            ],
+        ),
+        (
+            "forbidden_approval_result_disagree_analysis",
+            bundle_with_analysis_markdown("审批结论：不同意。"),
+            [
+                "docx_write_plan.analysis_markdown contains forbidden conclusion categories: 否决"
+            ],
+        ),
+        (
+            "forbidden_review_result_reject_risk",
+            bundle_with_risk_statement("审查结论：拒绝。"),
+            [
+                "risk_points[0].statement contains forbidden conclusion categories: 否决"
+            ],
+        ),
+        (
+            "forbidden_review_result_reject_analysis",
+            bundle_with_analysis_markdown("审查结论：拒绝。"),
+            [
+                "docx_write_plan.analysis_markdown contains forbidden conclusion categories: 否决"
+            ],
+        ),
+        (
+            "duplicate_metric_period",
+            duplicate_metric_period,
+            [
+                "financial_tables duplicate (metric, period) key "
+                "('total_assets', '2025'): financial_tables.profit.rows[0].values.2025 "
+                "conflicts with financial_tables.asset_liability.rows[1].values.2025",
+                "ratios.asset_liability_ratio.inputs[1] must reference a unique "
+                "financial_tables value",
+            ],
+        ),
+    ]
+
     with tempfile.TemporaryDirectory() as temporary_directory:
         directory = Path(temporary_directory)
         failures = schema_phase_one_contract_failures()
+        failures.extend(reference_contract_failures())
         for name, bundle, expected_code in cases:
             failure = run_case(name, bundle, expected_code, directory)
+            if failure:
+                failures.append(failure)
+        for name, bundle, expected_errors in exact_error_cases:
+            failure = run_case(
+                name,
+                bundle,
+                1,
+                directory,
+                expected_errors=expected_errors,
+            )
             if failure:
                 failures.append(failure)
 

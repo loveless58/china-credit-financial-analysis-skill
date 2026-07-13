@@ -12,12 +12,14 @@ from docx import Document
 from docx.oxml.ns import qn
 
 if __package__:
+    from .insert_financial_analysis import locate_financial_section_anchors
     from .preserve_financial_table_format import (
         find_table_in_section,
         table_text,
         tables_in_section,
     )
 else:
+    from insert_financial_analysis import locate_financial_section_anchors
     from preserve_financial_table_format import (
         find_table_in_section,
         table_text,
@@ -60,6 +62,17 @@ def first_run_in_table(table):
                 if paragraph.runs:
                     return paragraph.runs[0]
     return None
+
+
+def first_row_unique_cell_text(table) -> str:
+    seen = set()
+    values = []
+    for cell in table.rows[0].cells:
+        if cell._tc in seen:
+            continue
+        seen.add(cell._tc)
+        values.append(cell.text)
+    return "\n".join(values)
 
 
 def dominant_table_font(table) -> str | None:
@@ -163,7 +176,12 @@ def validate_financial_docx(
 
     doc = Document(str(docx))
     para_texts = [paragraph.text for paragraph in doc.paragraphs]
-    start, end = find_section(para_texts, section_start, section_end)
+    if analysis_anchor is not None:
+        start, _, end = locate_financial_section_anchors(
+            doc, section_start, analysis_anchor, section_end
+        )
+    else:
+        start, end = find_section(para_texts, section_start, section_end)
     section_text = "\n".join(para_texts[start:end])
     scoped_tables = tables_in_section(doc, section_start, section_end)
     asset_table_error = None
@@ -237,6 +255,8 @@ def validate_financial_docx(
         "asset_liability_table_cols": len(asset_tables[0].columns) if asset_tables else 0,
         "asset_liability_table_not_too_simple": bool(asset_tables)
         and len(asset_tables[0].rows) >= min_asset_table_rows,
+        "asset_table_title_contains_target_unit": bool(asset_tables)
+        and target_unit in first_row_unique_cell_text(asset_tables[0]),
         "indicator_table_found": bool(indicator_tables),
         "codex_marker_absent": "Codex" not in section_text,
         "section_shaded_paragraphs": len(shaded_paragraphs),
@@ -301,6 +321,7 @@ def validate_financial_docx(
         "forbidden_unit_absent_in_section",
         "asset_liability_table_found",
         "asset_liability_table_not_too_simple",
+        "asset_table_title_contains_target_unit",
         "section_shading_present",
     ]
     if not allow_codex_marker:

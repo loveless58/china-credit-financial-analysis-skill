@@ -91,6 +91,34 @@ def collect_allowed(payload: dict[str, Any]) -> set[tuple[str, bool]]:
     return allowed
 
 
+def canonical_period_year(period: Any) -> str | None:
+    match = re.fullmatch(r"(\d{4})(?:Q[1-4])?", str(period).strip())
+    return match.group(1) if match is not None else None
+
+
+def is_structural_number(draft: str, start: int, end: int) -> bool:
+    line_start = draft.rfind("\n", 0, start) + 1
+    line_prefix = draft[line_start:start]
+    after = draft[end : min(len(draft), end + 2)]
+
+    if re.fullmatch(r"[ \t]*(?:[-*+][ \t]+)?", line_prefix) and re.match(
+        r"[.、．)）]", after
+    ):
+        return True
+    if re.fullmatch(r"[ \t]*#{1,6}[ \t]+", line_prefix) and (
+        not after or after[0].isspace()
+    ):
+        return True
+    if start > 0 and draft[start - 1] == "表":
+        return True
+    return (
+        start > 0
+        and draft[start - 1] == "第"
+        and end < len(draft)
+        and draft[end] in "章节项"
+    )
+
+
 def is_contextual_non_financial_number(
     draft: str,
     start: int,
@@ -99,19 +127,10 @@ def is_contextual_non_financial_number(
     declared_bundle_years: set[str] | None = None,
 ) -> bool:
     normalized = normalize_number(raw)
-    before = draft[max(0, start - 12) : start]
-    after = draft[end : min(len(draft), end + 12)]
     if normalized.isdigit():
-        value = int(normalized)
         if is_contextual_year(draft, start, end, raw):
             return declared_bundle_years is None or normalized in declared_bundle_years
-        if 0 <= value <= 50 and any(token in before for token in ("###", "##", "\n#", "表", "第", "事项", "包括：\n")):
-            return True
-        if 0 <= value <= 50 and any(token in after for token in ("。", ".", "、", " ")):
-            line_start = draft.rfind("\n", 0, start) + 1
-            line_prefix = draft[line_start:start].strip()
-            if line_prefix in {"", "-", "*"}:
-                return True
+        return is_structural_number(draft, start, end)
     return False
 
 
@@ -128,10 +147,10 @@ def audit_text(draft: str, payloads: list[dict[str, Any]]) -> list[dict[str, Any
     bundle_payloads = [payload for payload in payloads if is_bundle_payload(payload)]
     declared_bundle_years = (
         {
-            normalize_number(str(period))
+            year
             for payload in bundle_payloads
             for period in payload.get("periods", [])
-            if number_key(str(period)) is not None
+            if (year := canonical_period_year(period)) is not None
         }
         if bundle_payloads
         else None

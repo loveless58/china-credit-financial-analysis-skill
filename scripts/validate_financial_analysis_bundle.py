@@ -21,7 +21,7 @@ ALLOWED_STATUSES = {
 }
 BODY_STATUSES = {"verified", "calculated"}
 CREDIT_SEMANTICS = r"(?:授信(?:审批)?|信贷)"
-AFFIRMATIVE_DECISIONS = r"(?:同意|给予|予以|批准|核准|批复)"
+AFFIRMATIVE_DECISIONS = r"(?:(?<!不)同意|给予|予以|批准|核准|批复)"
 NEGATIVE_DECISIONS = r"(?:不建议|不同意|不予|拒绝|否决|不通过)"
 PASS_DECISIONS = r"(?:通过|批准|核准)"
 AMOUNT_DECISIONS = r"(?:建议|拟定|核定|确定|决定|批准|核准|批复|给予|予以)"
@@ -36,11 +36,15 @@ CREDIT_LIMIT_SEMANTICS_PATTERN = re.compile(CREDIT_LIMIT_SEMANTICS)
 FORBIDDEN_CONCLUSION_PATTERNS = {
     "同意": re.compile(
         rf"{AFFIRMATIVE_DECISIONS}.{{0,8}}{CREDIT_SEMANTICS}|"
-        rf"{CREDIT_SEMANTICS}.{{0,8}}{AFFIRMATIVE_DECISIONS}"
+        rf"{CREDIT_SEMANTICS}.{{0,8}}{AFFIRMATIVE_DECISIONS}|"
+        rf"{APPROVAL_RESULT_SEMANTICS}.{{0,8}}{AFFIRMATIVE_DECISIONS}|"
+        rf"{AFFIRMATIVE_DECISIONS}.{{0,8}}{APPROVAL_RESULT_SEMANTICS}"
     ),
     "否决": re.compile(
         rf"{NEGATIVE_DECISIONS}.{{0,8}}{CREDIT_SEMANTICS}|"
-        rf"{CREDIT_SEMANTICS}.{{0,8}}{NEGATIVE_DECISIONS}"
+        rf"{CREDIT_SEMANTICS}.{{0,8}}{NEGATIVE_DECISIONS}|"
+        rf"{APPROVAL_RESULT_SEMANTICS}.{{0,8}}{NEGATIVE_DECISIONS}|"
+        rf"{NEGATIVE_DECISIONS}.{{0,8}}{APPROVAL_RESULT_SEMANTICS}"
     ),
     "通过": re.compile(
         rf"{PASS_DECISIONS}.{{0,8}}{CREDIT_SEMANTICS}|"
@@ -166,20 +170,46 @@ def validate_financial_tables(
     return errors
 
 
-def financial_value_index(financial_tables: Any) -> dict[tuple[str, str], dict[str, Any]]:
+def financial_value_index(
+    financial_tables: Any,
+) -> tuple[
+    dict[tuple[str, str], dict[str, Any]],
+    set[tuple[str, str]],
+    list[str],
+]:
     index: dict[tuple[str, str], dict[str, Any]] = {}
+    first_locations: dict[tuple[str, str], str] = {}
+    duplicate_keys: set[tuple[str, str]] = set()
+    errors: list[str] = []
     if not isinstance(financial_tables, dict):
-        return index
-    for table in financial_tables.values():
+        return index, duplicate_keys, errors
+    for table_name, table in financial_tables.items():
         if not isinstance(table, dict):
             continue
-        for row in table.get("rows", []):
+        for row_index, row in enumerate(table.get("rows", [])):
             if not isinstance(row, dict) or not is_non_empty_string(row.get("metric")):
                 continue
-            for period, item in row.get("values", {}).items():
+            values = row.get("values", {})
+            if not isinstance(values, dict):
+                continue
+            for period, item in values.items():
                 if isinstance(item, dict):
-                    index[(row["metric"], period)] = item
-    return index
+                    metric_period = (row["metric"], period)
+                    location = (
+                        f"financial_tables.{table_name}.rows[{row_index}].values.{period}"
+                    )
+                    if metric_period in first_locations:
+                        errors.append(
+                            "financial_tables duplicate (metric, period) key "
+                            f"{metric_period!r}: {location} conflicts with "
+                            f"{first_locations[metric_period]}"
+                        )
+                        duplicate_keys.add(metric_period)
+                        index.pop(metric_period, None)
+                        continue
+                    first_locations[metric_period] = location
+                    index[metric_period] = item
+    return index, duplicate_keys, errors
 
 
 def validate_ratios(
@@ -187,6 +217,7 @@ def validate_ratios(
     ratios_contract: dict[str, Any],
     periods: set[str],
     value_index: dict[tuple[str, str], dict[str, Any]],
+    duplicate_value_keys: set[tuple[str, str]],
 ) -> list[str]:
     if not isinstance(ratios, dict):
         return ["ratios must be an object"]
@@ -222,6 +253,11 @@ def validate_ratios(
             metric_period = (input_item.get("metric"), input_item.get("period"))
             if input_item.get("period") not in periods:
                 errors.append(f"{input_prefix}.period is not declared in periods")
+            if metric_period in duplicate_value_keys:
+                errors.append(
+                    f"{input_prefix} must reference a unique financial_tables value"
+                )
+                continue
             referenced = value_index.get(metric_period)
             if referenced is None:
                 errors.append(
@@ -430,12 +466,17 @@ def validate_bundle(bundle: dict[str, Any], schema: dict[str, Any]) -> list[str]
             period_set,
         )
     )
+    value_index, duplicate_value_keys, value_index_errors = financial_value_index(
+        bundle.get("financial_tables")
+    )
+    errors.extend(value_index_errors)
     errors.extend(
         validate_ratios(
             bundle.get("ratios"),
             ratios_contract,
             period_set,
-            financial_value_index(bundle.get("financial_tables")),
+            value_index,
+            duplicate_value_keys,
         )
     )
     errors.extend(

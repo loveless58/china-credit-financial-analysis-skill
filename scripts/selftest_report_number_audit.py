@@ -39,9 +39,42 @@ def main() -> None:
         "120.00%",
     ]
 
+    quarterly_bundle = copy.deepcopy(bundle)
+    quarterly_bundle["periods"] = ["2026Q1"]
+    assert audit_text("截至2026年一季度，总资产为120.00万元。", [quarterly_bundle]) == []
+    quarterly_year_findings = audit_text(
+        "截至2027年一季度，总资产为120.00万元。", [quarterly_bundle]
+    )
+    assert [item["number"] for item in quarterly_year_findings] == ["2027"]
+
+    noncanonical_period_bundle = copy.deepcopy(bundle)
+    noncanonical_period_bundle["periods"] = ["2026forecast"]
+    noncanonical_period_findings = audit_text(
+        "截至2026年末，总资产为120.00万元。", [noncanonical_period_bundle]
+    )
+    assert [item["number"] for item in noncanonical_period_findings] == ["2026"]
+
     assert audit_text(flatten_table_rows(bundle), [bundle]) == []
     table_findings = audit_text(f"{flatten_table_rows(bundle)}\n资产总计为888.00万元。", [bundle])
     assert [item["number"] for item in table_findings] == ["888.00"]
+
+    for surface, text in (
+        ("analysis body", "资产负债表内金额为30万元。"),
+        ("table_rows", f"{flatten_table_rows(bundle)}\n资产负债表内金额为30万元。"),
+    ):
+        contextual_table_findings = audit_text(text, [bundle])
+        assert [item["number"] for item in contextual_table_findings] == [
+            "30"
+        ], f"table word authorized amount on {surface}"
+
+    structural_number_draft = (
+        "1. 总资产分析\n"
+        "表1 资产负债简表\n"
+        "第1章 财务分析\n"
+        "第2节 偿债能力\n"
+        "第3项 风险提示"
+    )
+    assert audit_text(structural_number_draft, [bundle]) == []
 
     legacy_payload = {
         "metrics": {"total_assets": {"2025": {"value": "120.00"}}},
@@ -136,6 +169,7 @@ def main() -> None:
             "bundle audit authorized undeclared year through a metric value"
         )
     assert audit_text("截至2025年末，总资产为120.00万元。", [bundle]) == []
+
     assert audit_text("截至2026年末，总资产为120.00万元。", [legacy_payload]) == []
     assert not regression_failures, "\n".join(regression_failures)
 

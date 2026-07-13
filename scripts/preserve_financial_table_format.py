@@ -26,6 +26,13 @@ def table_text(table: Table) -> str:
     return "\n".join(cell.text for row in table.rows for cell in row.cells)
 
 
+def _normalized_preceding_anchor(text: str) -> str:
+    normalized = text.strip()
+    if normalized.endswith(("：", ":")):
+        normalized = normalized[:-1].rstrip()
+    return normalized
+
+
 def find_table(document: Document, anchors: list[str]) -> tuple[int, Table]:
     for index, table in enumerate(document.tables):
         text = table_text(table)
@@ -99,9 +106,6 @@ def find_table_in_section(
         for index, table in tables_in_section(document, section_start, section_end)
         if any(anchor in table_text(table) for anchor in anchors)
     ]
-    if len(anchored_matches) == 1:
-        return anchored_matches[0]
-
     matches = anchored_matches
     if preceding_anchor is not None:
         preceding_text: dict[int, str] = {}
@@ -112,15 +116,15 @@ def find_table_in_section(
                     last_paragraph = item.text.strip()
             else:
                 preceding_text[id(item._tbl)] = last_paragraph
-        contextual_matches = [
+        expected_context = _normalized_preceding_anchor(preceding_anchor)
+        matches = [
             (index, table)
             for index, table in anchored_matches
-            if preceding_anchor in preceding_text.get(id(table._tbl), "")
+            if _normalized_preceding_anchor(
+                preceding_text.get(id(table._tbl), "")
+            )
+            == expected_context
         ]
-        if len(contextual_matches) == 1:
-            return contextual_matches[0]
-        if contextual_matches:
-            matches = contextual_matches
     if len(matches) != 1:
         raise ValueError(
             "expected exactly one financial template table inside section "
@@ -140,6 +144,8 @@ def set_cell_text_preserving_format(cell, text: str) -> None:
         nodes[0].text = text
         for node in nodes[1:]:
             node.text = ""
+        return
+    if not text:
         return
     paragraph = cell.paragraphs[0] if cell.paragraphs else cell.add_paragraph()
     run = paragraph.add_run(text)

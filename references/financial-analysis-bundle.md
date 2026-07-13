@@ -23,14 +23,14 @@
 
 允许的状态为 `verified`、`calculated`、`source_missing`、`unit_missing`、`conflict`、`missing`、`llm_generated_blocked`。只有 `verified` 与 `calculated` 可作为 `analysis_markdown` 正文的数字准入状态；其余状态必须留在 `pending_verification` 或对应的数据项中，不能作为已确认正文事实。
 
-`verified` 财务表数据必须引用 `sources` 中存在的来源 ID。所有财务表值的期间、ratio 自身期间和 ratio 输入期间都必须属于顶层 `periods`。每个 ratio 输入必须引用 `financial_tables` 中已存在且状态为 `verified` 或 `calculated` 的 `(metric, period)`。`pending_verification.status` 只能使用非正文状态。
+`verified` 财务表数据必须引用 `sources` 中存在的来源 ID。所有财务表值的期间、ratio 自身期间和 ratio 输入期间都必须属于顶层 `periods`。Phase 1 中，`(metric, period)` 在整个 `financial_tables` 范围内全局唯一，不以表名划分命名空间；重复键属于业务校验错误，索引不得以后出现的值覆盖先出现的值。每个 ratio 输入必须唯一引用 `financial_tables` 中已存在且状态为 `verified` 或 `calculated` 的 `(metric, period)`；重复键不能作为 ratio 输入。`pending_verification.status` 只能使用非正文状态。
 
 ### 授信结论禁入边界
 
 `risk_points.statement` 和 `docx_write_plan.analysis_markdown` 共用同一组具名、保守的禁令模式。所有类别都先按句号、分号和换行切分为独立窗口，只在单个窗口内组合授信语义、决策措辞或决策金额，不跨窗口拼接：
 
-- 同意类：`同意`、`给予`、`予以`、`批准`、`核准`、`批复` 与“授信”或“授信审批”组合。
-- 否决类：`不建议`、`不同意`、`不予`、`拒绝`、`否决`、`不通过` 与“授信”或“授信审批”组合。
+- 同意类：`同意`、`给予`、`予以`、`批准`、`核准`、`批复` 与“授信”“授信审批”或“审批/审查结论”组合。
+- 否决类：`不建议`、`不同意`、`不予`、`拒绝`、`否决`、`不通过` 与“授信”“授信审批”或“审批/审查结论”组合。
 - 通过类：`通过`、`批准`、`核准` 与“授信”“授信审批”或“审批结论”组合。
 - 额度类：单一窗口同时出现“授信”或 `额度`/`限额`语义、金额或额度语义，以及 `建议`、`拟定`、`核定`、`确定`、`决定`、`批复` 等金额决策措辞时禁止。
 

@@ -115,6 +115,7 @@ def table_rows() -> list[list[str]]:
 def make_source_docx(path: Path, target_cell_mode: str = "text") -> None:
     document = Document()
     document.add_paragraph(SECTION_START)
+    document.add_paragraph("合并数据：")
     table = document.add_table(rows=20, cols=3)
     table.style = "Table Grid"
     set_borders(table)
@@ -272,6 +273,7 @@ def assert_replace_success(source: Path, source_hash_before: str, tmp_path: Path
         assert validation["checks"][key] is True
     assert validation["checks"]["asset_table_target_format_preserved"] is True
     assert validation["checks"]["asset_table_target_text_runs_formatted"] is True
+    assert validation["checks"]["asset_table_planned_empty_cells_empty"] is True
     assert validation["checks"]["asset_table_first_cell_shading"] == "D9EAD3"
     assert (out_dir / "change_log.md").exists()
     assert (out_dir / "待核验清单.md").exists()
@@ -287,6 +289,10 @@ def assert_number_audit_failure(source: Path, tmp_path: Path) -> None:
     assert [finding["number"] for finding in audit["findings"]] == ["999.00"]
     assert len(list(out_dir.glob("*.backup-*.docx"))) == 1
     assert not (out_dir / OUTPUT_FILENAME).exists()
+    validation = json.loads(
+        (out_dir / "validation_result.json").read_text(encoding="utf-8")
+    )
+    assert "number audit failed" in validation["failed"]
     pending = (out_dir / "待核验清单.md").read_text(encoding="utf-8")
     assert "核验受限资产明细" in pending
     assert "number audit failed" in pending
@@ -495,7 +501,11 @@ def assert_noncontiguous_analysis_rejected(tmp_path: Path) -> None:
     docx = tmp_path / "noncontiguous-analysis.docx"
     make_source_docx(docx)
     document = Document(str(docx))
-    wrong_paragraph = document.paragraphs[2]
+    wrong_paragraph = next(
+        paragraph
+        for paragraph in document.paragraphs
+        if paragraph.text == "旧财务分析内容。"
+    )
     wrong_paragraph.text = "错误中间段落。"
     expected_paragraph = add_paragraph_after(wrong_paragraph, "旧财务分析内容。")
     set_paragraph_shading(expected_paragraph, "FFF2CC")
@@ -640,6 +650,7 @@ def assert_scoped_table_unit_validation(tmp_path: Path) -> None:
     make_source_docx(unrelated_docx)
     unrelated_doc = Document(str(unrelated_docx))
     unrelated_doc.tables[0].cell(0, 0).text = "资产负债简表（合并口径）"
+    unrelated_doc.paragraphs[-2].text = "正文单位为万元。"
     unrelated_doc.save(str(unrelated_docx))
     add_decoy_table_before_section(unrelated_docx)
     unrelated_validation = validate_financial_docx(
@@ -651,7 +662,12 @@ def assert_scoped_table_unit_validation(tmp_path: Path) -> None:
         expected_shading="FFF2CC",
         min_asset_table_rows=20,
     )
-    assert unrelated_validation["checks"]["target_unit_present"] is False
+    assert unrelated_validation["checks"]["target_unit_present"] is True
+    assert (
+        unrelated_validation["checks"]["asset_table_title_contains_target_unit"]
+        is False
+    )
+    assert "asset_table_title_contains_target_unit" in unrelated_validation["failed"]
 
 
 def assert_pending_written_after_anchor_failure(tmp_path: Path) -> None:
@@ -669,6 +685,100 @@ def assert_pending_written_after_anchor_failure(tmp_path: Path) -> None:
     assert "不存在的正文锚点" in pending or "analysis anchor" in pending
 
 
+def assert_body_anchor_boundaries(tmp_path: Path) -> None:
+    cross_section_source = tmp_path / "cross-section-anchor-source.docx"
+    make_source_docx(cross_section_source)
+    cross_section_doc = Document(str(cross_section_source))
+    early_end = cross_section_doc.add_paragraph(SECTION_END)
+    cross_section_doc.tables[0]._tbl.addnext(early_end._p)
+    cross_section_doc.save(str(cross_section_source))
+
+    direct_bundle = tmp_path / "cross-section-anchor.bundle.json"
+    direct_bundle.write_text(
+        json.dumps(valid_bundle(), ensure_ascii=False), encoding="utf-8"
+    )
+    original_fill_table = updater_module.fill_table
+
+    def reject_early_table_mutation(*_args, **_kwargs):
+        raise AssertionError("table mutation started before body anchor validation")
+
+    updater_module.fill_table = reject_early_table_mutation
+    try:
+        try:
+            updater_module.update_financial_docx(
+                source_docx=cross_section_source,
+                bundle_path=direct_bundle,
+                schema_path=SCHEMA,
+                out_dir=tmp_path / "cross-section-direct-output",
+            )
+        except ValueError as error:
+            assert "analysis anchor" in str(error)
+        else:
+            raise AssertionError("cross-section analysis anchor was accepted")
+    finally:
+        updater_module.fill_table = original_fill_table
+
+    cross_section_out = tmp_path / "cross-section-anchor-output"
+    cross_section_result = run_updater(
+        cross_section_source, valid_bundle(), cross_section_out
+    )
+    assert cross_section_result.returncode != 0
+    assert not (cross_section_out / OUTPUT_FILENAME).exists()
+
+    duplicate_source = tmp_path / "duplicate-analysis-anchor-source.docx"
+    make_source_docx(duplicate_source)
+    duplicate_doc = Document(str(duplicate_source))
+    add_paragraph_after(duplicate_doc.paragraphs[-2], ANALYSIS_ANCHOR)
+    duplicate_doc.save(str(duplicate_source))
+    duplicate_out = tmp_path / "duplicate-analysis-anchor-output"
+    duplicate_result = run_updater(duplicate_source, valid_bundle(), duplicate_out)
+    assert duplicate_result.returncode != 0
+    assert not (duplicate_out / OUTPUT_FILENAME).exists()
+
+    try:
+        validate_financial_docx(
+            docx=duplicate_source,
+            section_start=SECTION_START,
+            section_end=SECTION_END,
+            target_unit="万元",
+            forbidden_units=["亿元"],
+            expected_shading="FFF2CC",
+            min_asset_table_rows=20,
+            analysis_anchor=ANALYSIS_ANCHOR,
+            expected_analysis_lines=["旧财务分析内容。"],
+            asset_table_preceding_anchor="合并数据",
+        )
+    except ValueError as error:
+        assert "analysis anchor" in str(error)
+    else:
+        raise AssertionError("validator accepted duplicate analysis anchors")
+
+
+def assert_staging_cleanup_and_atomic_publish(tmp_path: Path) -> None:
+    source = tmp_path / "staging-validation-source.docx"
+    make_source_docx(source)
+    source_document = Document(str(source))
+    source_document.paragraphs[-2].text = "旧正文金额单位为亿元。"
+    source_document.save(str(source))
+    source_hash_before = sha256(source)
+
+    bundle = valid_bundle()
+    bundle["docx_write_plan"]["mode"] = "insert"
+    out_dir = tmp_path / "staging-validation-output"
+    result = run_updater(source, bundle, out_dir)
+    assert result.returncode != 0
+    assert sha256(source) == source_hash_before
+    assert len(list(out_dir.glob("*.backup-*.docx"))) == 1
+    assert (out_dir / "number_audit.json").exists()
+    validation = json.loads(
+        (out_dir / "validation_result.json").read_text(encoding="utf-8")
+    )
+    assert "forbidden_unit_absent_in_section" in validation["failed"]
+    assert (out_dir / "待核验清单.md").exists()
+    assert not (out_dir / OUTPUT_FILENAME).exists()
+    assert not [path for path in out_dir.iterdir() if ".staging-" in path.name]
+
+
 def assert_table_format_fingerprint_detects_loss(tmp_path: Path) -> None:
     from update_financial_docx import table_format_fingerprint
 
@@ -677,10 +787,23 @@ def assert_table_format_fingerprint_detects_loss(tmp_path: Path) -> None:
     document = Document(str(docx))
     table = document.tables[0]
     expected = table_format_fingerprint(table, table_rows())
-    target_run = run_with_text(table.cell(2, 2), "110.00")
-    format_run(target_run, "宋体", 12)
+    set_cell_shading(table.cell(3, 1), "ABCDEF")
     changed = table_format_fingerprint(table, table_rows())
     assert changed != expected
+
+
+def assert_planned_empty_cells_are_validated(tmp_path: Path) -> None:
+    source = tmp_path / "planned-empty-source.docx"
+    make_source_docx(source)
+    out_dir = tmp_path / "planned-empty-output"
+    result = run_updater(source, valid_bundle(), out_dir)
+    assert result.returncode == 0, result.stderr
+    output = Document(str(out_dir / OUTPUT_FILENAME))
+    assert output.tables[0].cell(3, 1).text == ""
+    validation = json.loads(
+        (out_dir / "validation_result.json").read_text(encoding="utf-8")
+    )
+    assert validation["checks"]["asset_table_planned_empty_cells_empty"] is True
 
 
 def run_selected_case(case: str, tmp_path: Path) -> None:
@@ -696,6 +819,8 @@ def run_selected_case(case: str, tmp_path: Path) -> None:
         assert_unrelated_shading_not_accepted(tmp_path)
     elif case == "table-format-gate":
         assert_table_format_fingerprint_detects_loss(tmp_path)
+    elif case == "planned-empty-cells":
+        assert_planned_empty_cells_are_validated(tmp_path)
     elif case == "unsafe-empty-text-node":
         assert_unsafe_empty_text_node_handled(tmp_path)
     elif case == "noncontiguous-analysis":
@@ -710,6 +835,10 @@ def run_selected_case(case: str, tmp_path: Path) -> None:
         assert_scoped_table_unit_validation(tmp_path)
     elif case == "pending-after-failure":
         assert_pending_written_after_anchor_failure(tmp_path)
+    elif case == "body-anchor-boundaries":
+        assert_body_anchor_boundaries(tmp_path)
+    elif case == "staging-atomic-publish":
+        assert_staging_cleanup_and_atomic_publish(tmp_path)
     else:
         raise ValueError(f"unknown self-test case: {case}")
 
@@ -737,6 +866,7 @@ def main() -> int:
         assert_formatted_empty_run_preserved(tmp_path)
         assert_unrelated_shading_not_accepted(tmp_path)
         assert_table_format_fingerprint_detects_loss(tmp_path)
+        assert_planned_empty_cells_are_validated(tmp_path)
         assert_unsafe_empty_text_node_handled(tmp_path)
         assert_noncontiguous_analysis_rejected(tmp_path)
         assert_phase1_plan_guard()
@@ -744,6 +874,8 @@ def main() -> int:
         assert_scoped_table_selection(tmp_path)
         assert_scoped_table_unit_validation(tmp_path)
         assert_pending_written_after_anchor_failure(tmp_path)
+        assert_body_anchor_boundaries(tmp_path)
+        assert_staging_cleanup_and_atomic_publish(tmp_path)
 
     print("financial DOCX update self-test passed")
     return 0

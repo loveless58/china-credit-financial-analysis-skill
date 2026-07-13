@@ -144,7 +144,7 @@ def assert_section_scoped_locator(tmp_path: Path) -> None:
 
     contextual = Document()
     contextual.add_paragraph("（五）、财务分析")
-    contextual.add_paragraph("合并数据：")
+    contextual.add_paragraph("  合并数据 ：  ")
     expected_contextual = add_asset_table(contextual, "200")
     contextual.add_paragraph("本部财务数据：")
     add_asset_table(contextual, "300")
@@ -158,6 +158,24 @@ def assert_section_scoped_locator(tmp_path: Path) -> None:
     )
     assert contextual_index == 0
     assert contextual_target._tbl is expected_contextual._tbl
+
+    parent_only = Document()
+    parent_only.add_paragraph("（五）、财务分析")
+    parent_only.add_paragraph("本部财务数据：")
+    add_asset_table(parent_only, "300")
+    parent_only.add_paragraph("（六）、行业分析")
+    try:
+        find_table_in_section(
+            parent_only,
+            ["资产负债简表", "资产总计"],
+            "（五）、财务分析",
+            "（六）、行业分析",
+            preceding_anchor="合并数据",
+        )
+    except ValueError as error:
+        assert "found 0" in str(error)
+    else:
+        raise AssertionError("single parent-company table bypassed preceding_anchor")
 
 
 def main() -> int:

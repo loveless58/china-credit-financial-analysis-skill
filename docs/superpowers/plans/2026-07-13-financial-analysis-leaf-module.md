@@ -603,9 +603,10 @@ else:
         shading=plan["change_shading"],
     )
 output = out_dir / plan["output_filename"]
-document.save(str(output))
+staging = _staging_output_path(output)
+document.save(str(staging))
 validation = validate_financial_docx(
-    docx=output,
+    docx=staging,
     section_start=plan["section_start"],
     section_end=plan["section_end"],
     target_unit=plan["target_unit"],
@@ -633,14 +634,17 @@ write_change_log(
 )
 if validation["failed"]:
     raise UpdateFailed("DOCX validation failed", validation["failed"])
+staging.replace(output)
 ```
 
 硬规则：
 
 - `out_dir` 位于 Skill 仓库内部时拒绝；
 - output 与 source 为同一路径时拒绝；
-- 数字审计失败时保留 backup 和审计 JSON，但不生成更新稿；
-- 结构校验失败时保留更新稿和证据，但 CLI 返回非零；
+- 数字审计失败时保留 backup、审计 JSON、`validation_result.json` 和待核验清单，但不生成最终命名更新稿；
+- DOCX 必须先保存为 final output 同目录的唯一 staging 文件，所有 reopen、格式指纹和结构校验均针对 staging；
+- backup 创建后的任意写回或校验失败都删除 staging，保留 backup、审计 JSON、`validation_result.json` 和待核验清单，不保留最终命名更新稿，CLI 返回非零；
+- 全部门禁通过后，才用同目录原子 replace 将 staging 发布为 final output；
 - 成功 stdout 只输出路径摘要 JSON。
 
 - [ ] **Step 7: 运行绿灯、编译检查并提交**

@@ -58,15 +58,25 @@ def format_run(run, font_name: str, font_size: float) -> None:
     )
 
 
-def _ordered_anchors(
+def locate_financial_section_anchors(
     document: Document,
     section_start: str,
     analysis_anchor: str,
     section_end: str,
 ) -> tuple[int, int, int]:
     section_index = find_paragraph_index(document, section_start)
-    analysis_index = find_paragraph_index(document, analysis_anchor, section_index + 1)
-    end_index = find_paragraph_index(document, section_end, analysis_index + 1)
+    end_index = find_paragraph_index(document, section_end, section_index + 1)
+    analysis_matches = [
+        index
+        for index in range(section_index + 1, end_index)
+        if analysis_anchor in document.paragraphs[index].text
+    ]
+    if len(analysis_matches) != 1:
+        raise ValueError(
+            "expected exactly one analysis anchor inside nearest financial section; "
+            f"found {len(analysis_matches)}; analysis_anchor={analysis_anchor!r}"
+        )
+    analysis_index = analysis_matches[0]
     return section_index, analysis_index, end_index
 
 
@@ -97,7 +107,7 @@ def replace_analysis_body(
     body_font: str = "仿宋_GB2312",
     body_size: float = 14,
 ) -> str:
-    _, analysis_index, end_index = _ordered_anchors(
+    _, analysis_index, end_index = locate_financial_section_anchors(
         document, section_start, analysis_anchor, section_end
     )
     paragraphs = document.paragraphs
@@ -125,7 +135,7 @@ def insert_analysis_body(
     body_font: str = "仿宋_GB2312",
     body_size: float = 14,
 ) -> str:
-    _, analysis_index, _ = _ordered_anchors(
+    _, analysis_index, _ = locate_financial_section_anchors(
         document, section_start, analysis_anchor, section_end
     )
     lines = ["【Codex财务分析更新建议】", *analysis_markdown.splitlines()]
