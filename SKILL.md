@@ -34,68 +34,58 @@ Read only the files needed for the current task:
 - DOCX backup and write-back safety: `references/docx-safety.md`.
 - DOCX financial-section order, table format, font, unit, and shading contract: `references/docx-format-contract.md`.
 - Listed-company official disclosure workflow: `references/listed-company-official-data.md`.
+- Bundle contract: read `references/financial-analysis-bundle.md` whenever producing an analysis-only handoff or preparing a DOCX write-back.
 
 ## Workflow
 
-1. Identify inputs: DOCX path, target company, reporting periods, listed-company status, user-provided data files, write-back mode, and allowed workspace.
-2. Copy outside-workspace DOCX files into the workspace before editing.
-3. Extract the existing financial section and financial-looking tables from the DOCX. Detect the template unit, table order, table anchor text, and style samples.
-4. Choose data sources by priority. For listed companies, prefer official exchange/company disclosure PDFs; use third-party APIs only for cross-checking or with caveat language.
-5. Normalize data into a metric pack with `company_name`, `currency`, `source_unit`, `unit`, `conversion_factor`, `reporting_basis`, `periods`, `metrics`, and per-metric `source` and `status`.
-6. Convert source units to the locked output unit with deterministic code.
-7. Run deterministic calculations with `scripts/calculate_credit_metrics.py` or equivalent local tooling. Use calculated outputs as the only source for ratios and validation rows.
-8. Draft the section from `templates/credit_financial_analysis_base.md`, adapting the bank and industry templates only when relevant.
-9. If replacing DOCX content:
-   - Back up the input DOCX.
-   - Localize the financial-analysis section.
-   - Preserve the source file order: `合并数据：` -> asset-liability summary table -> `本部财务数据：` -> `财务指标数据：` -> indicator table -> `合并财务情况分析：`.
-   - Clone the original asset-liability summary table format when present; otherwise create a visually equivalent table and record the fallback.
-   - Apply change shading to every inserted/replaced paragraph and table cell.
-10. Run `scripts/validate_financial_docx.py` or an equivalent structural check before reporting completion.
+1. Identify inputs: read-only DOCX path, target company, reporting periods, listed-company status, user-provided data files, requested mode, and an output directory outside the Skill repository.
+2. Extract the existing financial section and financial-looking tables from the DOCX. Detect the template unit, table order, table anchor text, and style samples without modifying the source file.
+3. Choose data sources by priority. For listed companies, prefer official exchange/company disclosure PDFs; use third-party APIs only for cross-checking or with caveat language.
+4. Normalize data into a metric pack with `company_name`, `currency`, `source_unit`, `unit`, `conversion_factor`, `reporting_basis`, `periods`, `metrics`, and per-metric `source` and `status`.
+5. Convert source units and calculate ratios and year-on-year changes with deterministic code. Use deterministic outputs as the only source for calculated bundle values.
+6. Read `references/financial-analysis-bundle.md`, draft `docx_write_plan.analysis_markdown`, and assemble the complete `financial_analysis_bundle.json`. This bundle is the only public handoff interface before write-back; downstream audit and DOCX operations must not consume temporary calculation files.
+7. Validate the assembled bundle with `scripts/validate_financial_analysis_bundle.py`. Do not continue to DOCX write-back unless validation exits successfully.
+8. In analysis-only mode, deliver the validated `financial_analysis_bundle.json` and its validation result without creating or updating a DOCX.
+9. For formal DOCX write-back, call only `scripts/update_financial_docx.py` with the validated bundle. The updater owns backup creation, section localization, format-preserving replacement, number audit, structural validation, change log, and pending-verification output; any failure must return a non-zero exit and stop the workflow.
+10. Keep the bundle, validation results, backups, updated DOCX files, audits, Markdown deliverables, renders, and all other run artifacts in the declared output directory outside the Skill repository.
 11. Try visual render QA when the environment has Word/LibreOffice/render tools. If not available, explicitly say visual QA was not completed.
 
 ## Script Quick Start
 
 Extract DOCX paragraphs and financial tables:
 
-```bash
-python scripts/extract_docx_financials.py report.docx --out-dir extracted
+```powershell
+python -B scripts/extract_docx_financials.py C:\tmp\source.docx --out-dir C:\tmp\financial-analysis-extracted
 ```
 
 Fetch official SSE announcements:
 
-```bash
-python scripts/fetch_sse_announcements.py --stock-code 600519 --keywords "2025年年度报告,2024年年度报告,2026年第一季度报告" --out-dir official_sources
+```powershell
+python -B scripts/fetch_sse_announcements.py --stock-code 600519 --keywords "2025年年度报告,2024年年度报告,2026年第一季度报告" --out-dir C:\tmp\financial-analysis-official-sources
 ```
 
 Extract official PDF metrics:
 
-```bash
-python scripts/extract_official_report_metrics.py --manifest official_sources/manifest.json --company-name 贵州茅台酒股份有限公司 --output-unit 万元 --out official_metric_pack.json
+```powershell
+python -B scripts/extract_official_report_metrics.py --manifest C:\tmp\financial-analysis-official-sources\manifest.json --company-name 贵州茅台酒股份有限公司 --output-unit 万元 --out C:\tmp\official_metric_pack.json
 ```
 
 Calculate metrics and audit Markdown:
 
-```bash
-python scripts/calculate_credit_metrics.py input_metrics.json --out-dir outputs
+```powershell
+python -B scripts/calculate_credit_metrics.py C:\tmp\input_metrics.json --out-dir C:\tmp\financial-analysis-calculated
 ```
 
-Back up a DOCX:
+Validate the public bundle before any write-back:
 
-```bash
-python scripts/backup_docx.py report.docx
+```powershell
+python -B scripts/validate_financial_analysis_bundle.py C:\tmp\financial_analysis_bundle.json --schema schemas\financial_analysis_bundle.schema.json --out C:\tmp\bundle_validation.json
 ```
 
-Preserve the template asset-liability table format while replacing values:
+Formally write back a validated bundle through the single updater entry point:
 
-```bash
-python scripts/preserve_financial_table_format.py report.docx rows.json --out report_table_replaced.docx --table-key asset_liability --anchor 资产负债简表 --mode replace-template
-```
-
-Validate the final DOCX:
-
-```bash
-python scripts/validate_financial_docx.py --docx report_updated.docx --target-unit 万元 --expected-shading FFF2CC --body-font 仿宋_GB2312 --body-size 14 --table-font 仿宋 --table-size 12
+```powershell
+python -B scripts/update_financial_docx.py C:\tmp\source.docx C:\tmp\financial_analysis_bundle.json --schema schemas\financial_analysis_bundle.schema.json --out-dir C:\tmp\financial-analysis-output
 ```
 
 ## Output Contract
@@ -111,6 +101,8 @@ Always distinguish:
 - Structural validation results.
 - Pending human verification items.
 - Limitations, including unavailable visual render QA.
+- The validated `financial_analysis_bundle.json` path and bundle validation result; these may be the complete deliverable in analysis-only mode.
+- Confirmation that every run artifact path is outside the Skill repository.
 
 ## Common Mistakes
 
