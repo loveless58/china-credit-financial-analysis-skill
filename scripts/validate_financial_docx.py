@@ -73,6 +73,58 @@ def dominant_table_size(table) -> float | None:
     return Counter(values).most_common(1)[0][0] if values else None
 
 
+def find_expected_analysis_paragraphs(
+    document,
+    start: int,
+    end: int,
+    analysis_anchor: str,
+    expected_lines: list[str],
+) -> tuple[bool, list]:
+    anchor_index = next(
+        (
+            index
+            for index in range(start, end)
+            if analysis_anchor in document.paragraphs[index].text
+        ),
+        None,
+    )
+    if anchor_index is None:
+        return False, []
+
+    matched = []
+    cursor = anchor_index + 1
+    for expected_line in expected_lines:
+        match_index = next(
+            (
+                index
+                for index in range(cursor, end)
+                if document.paragraphs[index].text.strip() == expected_line
+            ),
+            None,
+        )
+        if match_index is None:
+            break
+        matched.append(document.paragraphs[match_index])
+        cursor = match_index + 1
+    return True, matched
+
+
+def paragraph_font_matches(paragraph, expected_font: str) -> bool:
+    text_runs = [run for run in paragraph.runs if run.text.strip()]
+    return bool(text_runs) and all(
+        east_asia_font(run) == expected_font for run in text_runs
+    )
+
+
+def paragraph_size_matches(paragraph, expected_size: float) -> bool:
+    text_runs = [run for run in paragraph.runs if run.text.strip()]
+    return bool(text_runs) and all(
+        run.font.size is not None
+        and abs(run.font.size.pt - expected_size) < 0.001
+        for run in text_runs
+    )
+
+
 def validate_financial_docx(
     docx: Path,
     section_start: str,
@@ -86,6 +138,8 @@ def validate_financial_docx(
     table_size: float | None = None,
     min_asset_table_rows: int = 20,
     allow_codex_marker: bool = False,
+    analysis_anchor: str | None = None,
+    expected_analysis_lines: list[str] | None = None,
 ) -> dict[str, object]:
     docx = docx.resolve()
     if not docx.is_file() or docx.suffix.lower() != ".docx":
@@ -116,10 +170,31 @@ def validate_financial_docx(
         for paragraph in doc.paragraphs[start:end]
         if para_shade(paragraph) == expected_shading
     ]
+    precise_body_validation = (
+        analysis_anchor is not None and expected_analysis_lines is not None
+    )
+    expected_lines = [
+        line.strip()
+        for line in (expected_analysis_lines or [])
+        if line.strip()
+    ]
+    anchor_found = False
+    matched_analysis_paragraphs = []
+    if precise_body_validation and expected_lines:
+        anchor_found, matched_analysis_paragraphs = find_expected_analysis_paragraphs(
+            doc,
+            start,
+            end,
+            analysis_anchor,
+            expected_lines,
+        )
+    body_sample_paragraphs = (
+        matched_analysis_paragraphs if precise_body_validation else shaded_paragraphs
+    )
     body_run = next(
         (
             run
-            for paragraph in shaded_paragraphs
+            for paragraph in body_sample_paragraphs
             for run in paragraph.runs
             if run.text.strip()
         ),
@@ -162,6 +237,34 @@ def validate_financial_docx(
             else None
         ),
     }
+    if analysis_anchor is not None or expected_analysis_lines is not None:
+        all_lines_found = (
+            precise_body_validation
+            and bool(expected_lines)
+            and len(matched_analysis_paragraphs) == len(expected_lines)
+        )
+        checks["analysis_anchor_found"] = anchor_found
+        checks["analysis_lines_found"] = all_lines_found
+        checks["analysis_paragraph_shading_matches"] = all_lines_found and all(
+            para_shade(paragraph) == expected_shading
+            for paragraph in matched_analysis_paragraphs
+        )
+        checks["analysis_paragraph_font_matches"] = (
+            all_lines_found
+            and body_font is not None
+            and all(
+                paragraph_font_matches(paragraph, body_font)
+                for paragraph in matched_analysis_paragraphs
+            )
+        )
+        checks["analysis_paragraph_size_matches"] = (
+            all_lines_found
+            and body_size is not None
+            and all(
+                paragraph_size_matches(paragraph, body_size)
+                for paragraph in matched_analysis_paragraphs
+            )
+        )
     if body_font is not None:
         checks["body_font_matches"] = checks["body_font_sample"] == body_font
     if body_size is not None:
@@ -190,6 +293,16 @@ def validate_financial_docx(
         required.append("table_font_matches")
     if table_size is not None:
         required.append("table_size_matches")
+    if analysis_anchor is not None or expected_analysis_lines is not None:
+        required.extend(
+            [
+                "analysis_anchor_found",
+                "analysis_lines_found",
+                "analysis_paragraph_shading_matches",
+                "analysis_paragraph_font_matches",
+                "analysis_paragraph_size_matches",
+            ]
+        )
     failed = [key for key in required if not checks.get(key)]
     return {"checks": checks, "failed": failed}
 
@@ -208,6 +321,8 @@ def main() -> int:
     parser.add_argument("--table-size", type=float)
     parser.add_argument("--min-asset-table-rows", type=int, default=20)
     parser.add_argument("--allow-codex-marker", action="store_true")
+    parser.add_argument("--analysis-anchor")
+    parser.add_argument("--expected-analysis-line", action="append")
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
 
@@ -225,6 +340,8 @@ def main() -> int:
             table_size=args.table_size,
             min_asset_table_rows=args.min_asset_table_rows,
             allow_codex_marker=args.allow_codex_marker,
+            analysis_anchor=args.analysis_anchor,
+            expected_analysis_lines=args.expected_analysis_line,
         )
     except ValueError as error:
         result = {"checks": {}, "failed": [str(error)]}

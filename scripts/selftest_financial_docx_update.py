@@ -17,6 +17,9 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt
 
+from backup_docx import backup_path
+from validate_financial_docx import validate_financial_docx
+
 
 ROOT = Path(__file__).resolve().parent.parent
 UPDATER = ROOT / "scripts" / "update_financial_docx.py"
@@ -71,6 +74,23 @@ def paragraph_fill(paragraph) -> str | None:
     return shd.get(qn("w:fill")) if shd is not None else None
 
 
+def set_paragraph_shading(paragraph, fill: str) -> None:
+    p_pr = paragraph._p.get_or_add_pPr()
+    shd = p_pr.find(qn("w:shd"))
+    if shd is None:
+        shd = OxmlElement("w:shd")
+        p_pr.append(shd)
+    shd.set(qn("w:fill"), fill)
+
+
+def format_run(run, font_name: str, font_size: float) -> None:
+    run.font.name = font_name
+    run.font.size = Pt(font_size)
+    run._element.get_or_add_rPr().get_or_add_rFonts().set(
+        qn("w:eastAsia"), font_name
+    )
+
+
 def table_rows() -> list[list[str]]:
     rows = [
         ["资产负债简表（合并口径，单位：万元）", "", ""],
@@ -81,7 +101,7 @@ def table_rows() -> list[list[str]]:
     return rows
 
 
-def make_source_docx(path: Path) -> None:
+def make_source_docx(path: Path, target_cell_mode: str = "text") -> None:
     document = Document()
     document.add_paragraph(SECTION_START)
     table = document.add_table(rows=20, cols=3)
@@ -93,12 +113,13 @@ def make_source_docx(path: Path) -> None:
         for col_index, text in enumerate(row):
             cell = table.cell(row_index, col_index)
             set_cell_shading(cell, "D9EAD3")
-            run = cell.paragraphs[0].add_run(text)
-            run.font.name = "仿宋"
-            run.font.size = Pt(11)
-            run._element.get_or_add_rPr().get_or_add_rFonts().set(
-                qn("w:eastAsia"), "仿宋"
-            )
+            if row_index == 2 and col_index == 2 and target_cell_mode != "text":
+                if target_cell_mode == "formatted-empty-run":
+                    format_run(cell.paragraphs[0].add_run(), "仿宋", 11)
+                elif target_cell_mode != "unsafe-empty":
+                    raise ValueError(f"unknown target_cell_mode: {target_cell_mode}")
+                continue
+            format_run(cell.paragraphs[0].add_run(text), "仿宋", 11)
     document.add_paragraph(ANALYSIS_ANCHOR)
     document.add_paragraph("旧财务分析内容。")
     document.add_paragraph(SECTION_END)
@@ -218,7 +239,19 @@ def assert_replace_success(source: Path, source_hash_before: str, tmp_path: Path
     assert cell_fill(output_table.cell(2, 2)) == "D9EAD3"
     assert "00AA00" in output_table._tbl.tblPr.xml
     assert json.loads((out_dir / "number_audit.json").read_text(encoding="utf-8"))["findings"] == []
-    assert json.loads((out_dir / "validation_result.json").read_text(encoding="utf-8"))["failed"] == []
+    validation = json.loads(
+        (out_dir / "validation_result.json").read_text(encoding="utf-8")
+    )
+    assert validation["failed"] == []
+    for key in (
+        "analysis_anchor_found",
+        "analysis_lines_found",
+        "analysis_paragraph_shading_matches",
+        "analysis_paragraph_font_matches",
+        "analysis_paragraph_size_matches",
+    ):
+        assert validation["checks"][key] is True
+    assert validation["checks"]["asset_table_target_format_preserved"] is True
     assert (out_dir / "change_log.md").exists()
     assert (out_dir / "待核验清单.md").exists()
 
@@ -256,11 +289,194 @@ def assert_insert_success(source: Path, tmp_path: Path) -> None:
     )
     assert validation["failed"] == []
     assert validation["checks"]["codex_marker_absent"] is False
+    for key in (
+        "analysis_anchor_found",
+        "analysis_lines_found",
+        "analysis_paragraph_shading_matches",
+        "analysis_paragraph_font_matches",
+        "analysis_paragraph_size_matches",
+    ):
+        assert validation["checks"][key] is True
+
+
+def assert_output_entity_safety(tmp_path: Path) -> None:
+    hardlink_source = tmp_path / "hardlink-source.docx"
+    make_source_docx(hardlink_source)
+    source_hash_before = sha256(hardlink_source)
+    hardlink_out = tmp_path / "hardlink-output"
+    hardlink_out.mkdir()
+    output = hardlink_out / OUTPUT_FILENAME
+    os.link(hardlink_source, output)
+
+    result = run_updater(hardlink_source, valid_bundle(), hardlink_out)
+    assert result.returncode != 0, "hard-linked output was accepted"
+    assert "same file entity as source" in result.stderr
+    assert sha256(hardlink_source) == source_hash_before
+    assert not list(hardlink_out.glob("*.backup-*.docx"))
+    assert not (hardlink_out / "number_audit.json").exists()
+
+    existing_source = tmp_path / "existing-source.docx"
+    make_source_docx(existing_source)
+    existing_hash_before = sha256(existing_source)
+    existing_out = tmp_path / "existing-output"
+    existing_out.mkdir()
+    occupied = existing_out / OUTPUT_FILENAME
+    occupied.write_bytes(b"occupied")
+
+    result = run_updater(existing_source, valid_bundle(), existing_out)
+    assert result.returncode != 0, "existing output was accepted"
+    assert "output path already exists" in result.stderr
+    assert occupied.read_bytes() == b"occupied"
+    assert sha256(existing_source) == existing_hash_before
+    assert not list(existing_out.glob("*.backup-*.docx"))
+    assert not (existing_out / "number_audit.json").exists()
+
+
+def assert_backup_output_conflict_protection(tmp_path: Path) -> None:
+    source = tmp_path / "backup-conflict-source.docx"
+    make_source_docx(source)
+    out_dir = tmp_path / "backup-conflict-output"
+    out_dir.mkdir()
+    reserved_output = backup_path(source, out_dir)
+    guarded_backup = backup_path(source, out_dir, reserved=reserved_output)
+    assert guarded_backup != reserved_output
+    assert guarded_backup.parent == reserved_output.parent
+    assert guarded_backup.suffix == ".docx"
+
+
+def assert_table_dimension_failures(tmp_path: Path) -> None:
+    source = tmp_path / "dimension-source.docx"
+    make_source_docx(source)
+    source_hash_before = sha256(source)
+    base_rows = table_rows()
+    cases = {
+        "fewer-rows": base_rows[:-1],
+        "extra-rows": [*base_rows, ["待核验项目", "", ""]],
+        "short-row": [*base_rows[:3], ["待核验项目", ""], *base_rows[4:]],
+        "long-row": [
+            *base_rows[:3],
+            ["待核验项目", "", "", ""],
+            *base_rows[4:],
+        ],
+    }
+    for name, rows in cases.items():
+        bundle = valid_bundle()
+        bundle["docx_write_plan"]["table_rows"]["asset_liability"] = rows
+        out_dir = tmp_path / f"dimension-{name}"
+        result = run_updater(source, bundle, out_dir)
+        assert result.returncode != 0, f"invalid table dimensions accepted: {name}"
+        assert "table dimensions do not match template" in result.stderr
+        assert len(list(out_dir.glob("*.backup-*.docx"))) == 1
+        assert (out_dir / "number_audit.json").exists()
+        assert not (out_dir / OUTPUT_FILENAME).exists()
+        assert sha256(source) == source_hash_before
+
+
+def run_with_text(cell, text: str):
+    for paragraph in cell.paragraphs:
+        for run in paragraph.runs:
+            if text in run.text:
+                return run
+    raise AssertionError(f"run with text not found: {text}")
+
+
+def assert_formatted_empty_run_preserved(tmp_path: Path) -> None:
+    source = tmp_path / "formatted-empty-source.docx"
+    make_source_docx(source, target_cell_mode="formatted-empty-run")
+    out_dir = tmp_path / "formatted-empty-output"
+    result = run_updater(source, valid_bundle(), out_dir)
+    assert result.returncode == 0, result.stderr or result.stdout
+
+    output_document = Document(str(out_dir / OUTPUT_FILENAME))
+    output_table = output_document.tables[0]
+    output_run = run_with_text(output_table.cell(2, 2), "120.00")
+    assert east_asia_font(output_run) == "仿宋"
+    assert output_run.font.size.pt == 11
+    assert cell_fill(output_table.cell(2, 2)) == "D9EAD3"
+    assert "00AA00" in output_table._tbl.tblPr.xml
+    validation = json.loads(
+        (out_dir / "validation_result.json").read_text(encoding="utf-8")
+    )
+    assert validation["checks"]["asset_table_target_format_preserved"] is True
+
+    unsafe_source = tmp_path / "unsafe-empty-source.docx"
+    make_source_docx(unsafe_source, target_cell_mode="unsafe-empty")
+    unsafe_out = tmp_path / "unsafe-empty-output"
+    unsafe_result = run_updater(unsafe_source, valid_bundle(), unsafe_out)
+    assert unsafe_result.returncode != 0, "unformatted empty cell was accepted"
+    assert "no reusable formatted run" in unsafe_result.stderr
+    assert len(list(unsafe_out.glob("*.backup-*.docx"))) == 1
+    assert (unsafe_out / "number_audit.json").exists()
+    assert not (unsafe_out / OUTPUT_FILENAME).exists()
+
+
+def assert_unrelated_shading_not_accepted(tmp_path: Path) -> None:
+    docx = tmp_path / "unrelated-shading.docx"
+    make_source_docx(docx)
+    document = Document(str(docx))
+    heading = document.paragraphs[0]
+    set_paragraph_shading(heading, "FFF2CC")
+    format_run(heading.runs[0], "仿宋_GB2312", 14)
+    document.save(str(docx))
+
+    validation = validate_financial_docx(
+        docx=docx,
+        section_start=SECTION_START,
+        section_end=SECTION_END,
+        target_unit="万元",
+        forbidden_units=["亿元"],
+        expected_shading="FFF2CC",
+        body_font="仿宋_GB2312",
+        body_size=14,
+        min_asset_table_rows=20,
+        analysis_anchor=ANALYSIS_ANCHOR,
+        expected_analysis_lines=["旧财务分析内容。"],
+    )
+    assert "analysis_paragraph_shading_matches" in validation["failed"]
+    assert "analysis_paragraph_font_matches" in validation["failed"]
+    assert "analysis_paragraph_size_matches" in validation["failed"]
+
+
+def assert_table_format_fingerprint_detects_loss(tmp_path: Path) -> None:
+    from update_financial_docx import table_format_fingerprint
+
+    docx = tmp_path / "table-fingerprint.docx"
+    make_source_docx(docx)
+    document = Document(str(docx))
+    table = document.tables[0]
+    expected = table_format_fingerprint(table, table_rows())
+    target_run = run_with_text(table.cell(2, 2), "110.00")
+    format_run(target_run, "宋体", 12)
+    changed = table_format_fingerprint(table, table_rows())
+    assert changed != expected
+
+
+def run_selected_case(case: str, tmp_path: Path) -> None:
+    if case == "hardlink-output":
+        assert_output_entity_safety(tmp_path)
+    elif case == "backup-output-conflict":
+        assert_backup_output_conflict_protection(tmp_path)
+    elif case == "table-dimensions":
+        assert_table_dimension_failures(tmp_path)
+    elif case == "formatted-empty-run":
+        assert_formatted_empty_run_preserved(tmp_path)
+    elif case == "unrelated-shading":
+        assert_unrelated_shading_not_accepted(tmp_path)
+    elif case == "table-format-gate":
+        assert_table_format_fingerprint_detects_loss(tmp_path)
+    else:
+        raise ValueError(f"unknown self-test case: {case}")
 
 
 def main() -> int:
+    selected_case = sys.argv[1] if len(sys.argv) > 1 else "all"
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
+        if selected_case != "all":
+            run_selected_case(selected_case, tmp_path)
+            print(f"financial DOCX update self-test case passed: {selected_case}")
+            return 0
+
         source = tmp_path / "source.docx"
         make_source_docx(source)
         source_hash_before = sha256(source)
@@ -269,6 +485,12 @@ def main() -> int:
         assert_number_audit_failure(source, tmp_path)
         assert_insert_success(source, tmp_path)
         assert sha256(source) == source_hash_before
+        assert_output_entity_safety(tmp_path)
+        assert_backup_output_conflict_protection(tmp_path)
+        assert_table_dimension_failures(tmp_path)
+        assert_formatted_empty_run_preserved(tmp_path)
+        assert_unrelated_shading_not_accepted(tmp_path)
+        assert_table_format_fingerprint_detects_loss(tmp_path)
 
     print("financial DOCX update self-test passed")
     return 0

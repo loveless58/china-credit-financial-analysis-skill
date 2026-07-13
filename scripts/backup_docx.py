@@ -9,12 +9,17 @@ from datetime import datetime
 from pathlib import Path
 
 
-def backup_path(source: Path, directory: Path | None = None) -> Path:
+def backup_path(
+    source: Path,
+    directory: Path | None = None,
+    reserved: Path | None = None,
+) -> Path:
     target_dir = directory.resolve() if directory else source.resolve().parent
+    reserved = reserved.resolve() if reserved else None
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     candidate = target_dir / f"{source.stem}.backup-{stamp}{source.suffix}"
     counter = 1
-    while candidate.exists():
+    while candidate.exists() or (reserved is not None and candidate.resolve() == reserved):
         candidate = target_dir / f"{source.stem}.backup-{stamp}-{counter}{source.suffix}"
         counter += 1
     return candidate
