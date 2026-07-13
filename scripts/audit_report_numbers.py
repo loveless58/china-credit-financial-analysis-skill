@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -14,17 +15,23 @@ NUMBER_RE = re.compile(r"-?\d+(?:,\d{3})*(?:\.\d+)?%?")
 
 
 def normalize_number(text: str) -> str:
-    return text.replace(",", "").rstrip("%")
+    numeric_text = text.strip().replace(",", "").rstrip("%")
+    return format(Decimal(numeric_text).normalize(), "f")
 
 
-def collect_allowed(payload: dict[str, Any]) -> set[str]:
-    allowed: set[str] = set()
+def number_key(text: str) -> tuple[str, bool]:
+    raw = text.strip()
+    return normalize_number(raw), raw.endswith("%")
+
+
+def collect_allowed(payload: dict[str, Any]) -> set[tuple[str, bool]]:
+    allowed: set[tuple[str, bool]] = set()
 
     def visit(node: Any) -> None:
         if isinstance(node, dict):
             for key, value in node.items():
                 if key in {"value", "display"} and value not in (None, ""):
-                    allowed.add(normalize_number(str(value)))
+                    allowed.add(number_key(str(value)))
                 visit(value)
         elif isinstance(node, list):
             for value in node:
@@ -33,7 +40,7 @@ def collect_allowed(payload: dict[str, Any]) -> set[str]:
     for key in ("metrics", "calculated_metrics", "financial_tables", "ratios"):
         visit(payload.get(key, {}))
     for period in payload.get("periods", []):
-        allowed.add(normalize_number(str(period)))
+        allowed.add(number_key(str(period)))
     return allowed
 
 
@@ -56,7 +63,7 @@ def is_contextual_non_financial_number(draft: str, start: int, end: int, raw: st
 
 
 def audit_text(draft: str, payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    allowed: set[str] = set()
+    allowed: set[tuple[str, bool]] = set()
     for payload in payloads:
         allowed.update(collect_allowed(payload))
 
@@ -65,7 +72,7 @@ def audit_text(draft: str, payloads: list[dict[str, Any]]) -> list[dict[str, Any
         raw = match.group(0)
         if is_contextual_non_financial_number(draft, match.start(), match.end(), raw):
             continue
-        if normalize_number(raw) not in allowed:
+        if number_key(raw) not in allowed:
             findings.append(
                 {
                     "number": raw,
