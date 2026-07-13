@@ -73,6 +73,127 @@ def dominant_table_size(table) -> float | None:
     return Counter(values).most_common(1)[0][0] if values else None
 
 
+def validate_financial_docx(
+    docx: Path,
+    section_start: str,
+    section_end: str,
+    target_unit: str,
+    forbidden_units: list[str],
+    expected_shading: str,
+    body_font: str | None = None,
+    body_size: float | None = None,
+    table_font: str | None = None,
+    table_size: float | None = None,
+    min_asset_table_rows: int = 20,
+    allow_codex_marker: bool = False,
+) -> dict[str, object]:
+    docx = docx.resolve()
+    if not docx.is_file() or docx.suffix.lower() != ".docx":
+        return {"checks": {"docx_exists": False}, "failed": ["docx_exists"]}
+
+    doc = Document(str(docx))
+    para_texts = [paragraph.text for paragraph in doc.paragraphs]
+    start, end = find_section(para_texts, section_start, section_end)
+    section_text = "\n".join(para_texts[start:end])
+    financial_tables = [
+        table
+        for table in doc.tables
+        if any(
+            anchor in table_text(table)
+            for anchor in ("资产负债简表", "资产总计", "财务指标")
+        )
+    ]
+    asset_tables = [
+        table
+        for table in financial_tables
+        if "资产负债简表" in table_text(table) or "资产总计" in table_text(table)
+    ]
+    indicator_tables = [
+        table for table in financial_tables if "财务指标" in table_text(table)
+    ]
+    shaded_paragraphs = [
+        paragraph
+        for paragraph in doc.paragraphs[start:end]
+        if para_shade(paragraph) == expected_shading
+    ]
+    body_run = next(
+        (
+            run
+            for paragraph in shaded_paragraphs
+            for run in paragraph.runs
+            if run.text.strip()
+        ),
+        None,
+    )
+    table_run = first_run_in_table(asset_tables[0]) if asset_tables else None
+    detected_table_font = dominant_table_font(asset_tables[0]) if asset_tables else None
+    detected_table_size = dominant_table_size(asset_tables[0]) if asset_tables else None
+
+    checks: dict[str, object] = {
+        "docx_exists": True,
+        "financial_section_found": start < end,
+        "target_unit_present": target_unit in section_text
+        or any(target_unit in table_text(table) for table in financial_tables),
+        "forbidden_unit_absent_in_section": not any(
+            unit in section_text for unit in forbidden_units
+        ),
+        "asset_liability_table_found": bool(asset_tables),
+        "asset_liability_table_rows": len(asset_tables[0].rows) if asset_tables else 0,
+        "asset_liability_table_cols": len(asset_tables[0].columns) if asset_tables else 0,
+        "asset_liability_table_not_too_simple": bool(asset_tables)
+        and len(asset_tables[0].rows) >= min_asset_table_rows,
+        "indicator_table_found": bool(indicator_tables),
+        "codex_marker_absent": "Codex" not in section_text,
+        "section_shaded_paragraphs": len(shaded_paragraphs),
+        "section_shading_present": bool(shaded_paragraphs),
+        "asset_table_first_cell_shading": cell_shade(asset_tables[0].cell(0, 0))
+        if asset_tables
+        else None,
+        "body_font_sample": east_asia_font(body_run) if body_run else None,
+        "body_size_sample": body_run.font.size.pt
+        if body_run is not None and body_run.font.size is not None
+        else None,
+        "table_font_sample": detected_table_font
+        or (east_asia_font(table_run) if table_run else None),
+        "table_size_sample": detected_table_size
+        or (
+            table_run.font.size.pt
+            if table_run is not None and table_run.font.size is not None
+            else None
+        ),
+    }
+    if body_font is not None:
+        checks["body_font_matches"] = checks["body_font_sample"] == body_font
+    if body_size is not None:
+        checks["body_size_matches"] = checks["body_size_sample"] == body_size
+    if table_font is not None:
+        checks["table_font_matches"] = checks["table_font_sample"] == table_font
+    if table_size is not None:
+        checks["table_size_matches"] = checks["table_size_sample"] == table_size
+
+    required = [
+        "docx_exists",
+        "financial_section_found",
+        "target_unit_present",
+        "forbidden_unit_absent_in_section",
+        "asset_liability_table_found",
+        "asset_liability_table_not_too_simple",
+        "section_shading_present",
+    ]
+    if not allow_codex_marker:
+        required.append("codex_marker_absent")
+    if body_font is not None:
+        required.append("body_font_matches")
+    if body_size is not None:
+        required.append("body_size_matches")
+    if table_font is not None:
+        required.append("table_font_matches")
+    if table_size is not None:
+        required.append("table_size_matches")
+    failed = [key for key in required if not checks.get(key)]
+    return {"checks": checks, "failed": failed}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--docx", type=Path, required=True)
@@ -86,66 +207,33 @@ def main() -> int:
     parser.add_argument("--table-font")
     parser.add_argument("--table-size", type=float)
     parser.add_argument("--min-asset-table-rows", type=int, default=20)
+    parser.add_argument("--allow-codex-marker", action="store_true")
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
 
-    doc = Document(str(args.docx))
-    para_texts = [paragraph.text for paragraph in doc.paragraphs]
-    start, end = find_section(para_texts, args.section_start, args.section_end)
-    section_text = "\n".join(para_texts[start:end])
-    financial_tables = [table for table in doc.tables if any(anchor in table_text(table) for anchor in ("资产负债简表", "资产总计", "财务指标"))]
-    asset_tables = [table for table in financial_tables if "资产负债简表" in table_text(table) or "资产总计" in table_text(table)]
-    indicator_tables = [table for table in financial_tables if "财务指标" in table_text(table)]
-
-    body_run = next((run for paragraph in doc.paragraphs[start:end] for run in paragraph.runs if run.text.strip()), None)
-    table_run = first_run_in_table(asset_tables[0]) if asset_tables else None
-    table_font = dominant_table_font(asset_tables[0]) if asset_tables else None
-    table_size = dominant_table_size(asset_tables[0]) if asset_tables else None
-
-    checks: dict[str, object] = {
-        "docx_exists": args.docx.exists(),
-        "financial_section_found": start < end,
-        "target_unit_present": args.target_unit in section_text or any(args.target_unit in table_text(t) for t in financial_tables),
-        "forbidden_unit_absent_in_section": not any(unit in section_text for unit in args.forbidden_unit),
-        "asset_liability_table_found": bool(asset_tables),
-        "asset_liability_table_rows": len(asset_tables[0].rows) if asset_tables else 0,
-        "asset_liability_table_cols": len(asset_tables[0].columns) if asset_tables else 0,
-        "asset_liability_table_not_too_simple": bool(asset_tables) and len(asset_tables[0].rows) >= args.min_asset_table_rows,
-        "indicator_table_found": bool(indicator_tables),
-        "codex_marker_absent": "Codex" not in section_text,
-        "section_shaded_paragraphs": sum(1 for paragraph in doc.paragraphs[start:end] if para_shade(paragraph) == args.expected_shading),
-        "asset_table_first_cell_shading": cell_shade(asset_tables[0].cell(0, 0)) if asset_tables else None,
-        "body_font_sample": east_asia_font(body_run) if body_run else None,
-        "body_size_sample": body_run.font.size.pt if body_run is not None and body_run.font.size is not None else None,
-        "table_font_sample": table_font or (east_asia_font(table_run) if table_run else None),
-        "table_size_sample": table_size or (table_run.font.size.pt if table_run is not None and table_run.font.size is not None else None),
-    }
-    if args.body_font:
-        checks["body_font_matches"] = checks["body_font_sample"] == args.body_font
-    if args.body_size:
-        checks["body_size_matches"] = checks["body_size_sample"] == args.body_size
-    if args.table_font:
-        checks["table_font_matches"] = checks["table_font_sample"] == args.table_font
-    if args.table_size:
-        checks["table_size_matches"] = checks["table_size_sample"] == args.table_size
-
-    required = [
-        "docx_exists",
-        "financial_section_found",
-        "target_unit_present",
-        "forbidden_unit_absent_in_section",
-        "asset_liability_table_found",
-        "asset_liability_table_not_too_simple",
-        "codex_marker_absent",
-    ]
-    failed = [key for key in required if not checks.get(key)]
-    result = {"checks": checks, "failed": failed}
+    try:
+        result = validate_financial_docx(
+            docx=args.docx,
+            section_start=args.section_start,
+            section_end=args.section_end,
+            target_unit=args.target_unit,
+            forbidden_units=args.forbidden_unit,
+            expected_shading=args.expected_shading,
+            body_font=args.body_font,
+            body_size=args.body_size,
+            table_font=args.table_font,
+            table_size=args.table_size,
+            min_asset_table_rows=args.min_asset_table_rows,
+            allow_codex_marker=args.allow_codex_marker,
+        )
+    except ValueError as error:
+        result = {"checks": {}, "failed": [str(error)]}
     text = json.dumps(result, ensure_ascii=False, indent=2)
     if args.out:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(text, encoding="utf-8")
     print(text)
-    return 1 if failed else 0
+    return 1 if result["failed"] else 0
 
 
 if __name__ == "__main__":

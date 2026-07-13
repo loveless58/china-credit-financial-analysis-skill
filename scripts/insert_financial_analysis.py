@@ -8,6 +8,10 @@ from pathlib import Path
 
 try:
     from docx import Document
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Pt
+    from docx.text.paragraph import Paragraph
 except ImportError as exc:  # pragma: no cover - environment guard
     raise SystemExit("python-docx is required: pip install python-docx") from exc
 
@@ -23,14 +27,116 @@ def find_anchor(document: Document) -> int | None:
 
 
 def add_paragraph_after(paragraph, text: str):
-    from docx.oxml import OxmlElement
-    from docx.text.paragraph import Paragraph
-
     new_p = OxmlElement("w:p")
     paragraph._p.addnext(new_p)
     inserted = Paragraph(new_p, paragraph._parent)
     inserted.add_run(text)
     return inserted
+
+
+def find_paragraph_index(document: Document, anchor: str, start: int = 0) -> int:
+    for index, paragraph in enumerate(document.paragraphs[start:], start):
+        if anchor in paragraph.text:
+            return index
+    raise ValueError(f"paragraph anchor not found: {anchor}")
+
+
+def set_paragraph_shading(paragraph, fill: str) -> None:
+    p_pr = paragraph._p.get_or_add_pPr()
+    shd = p_pr.find(qn("w:shd"))
+    if shd is None:
+        shd = OxmlElement("w:shd")
+        p_pr.append(shd)
+    shd.set(qn("w:fill"), fill)
+
+
+def format_run(run, font_name: str, font_size: float) -> None:
+    run.font.name = font_name
+    run.font.size = Pt(font_size)
+    run._element.get_or_add_rPr().get_or_add_rFonts().set(
+        qn("w:eastAsia"), font_name
+    )
+
+
+def _ordered_anchors(
+    document: Document,
+    section_start: str,
+    analysis_anchor: str,
+    section_end: str,
+) -> tuple[int, int, int]:
+    section_index = find_paragraph_index(document, section_start)
+    analysis_index = find_paragraph_index(document, analysis_anchor, section_index + 1)
+    end_index = find_paragraph_index(document, section_end, analysis_index + 1)
+    return section_index, analysis_index, end_index
+
+
+def _insert_formatted_lines(
+    anchor,
+    lines: list[str],
+    shading: str,
+    body_font: str,
+    body_size: float,
+) -> None:
+    current = anchor
+    for line in lines:
+        if not line.strip():
+            continue
+        current = add_paragraph_after(current, line)
+        run = current.runs[-1]
+        set_paragraph_shading(current, shading)
+        format_run(run, body_font, body_size)
+
+
+def replace_analysis_body(
+    document: Document,
+    section_start: str,
+    analysis_anchor: str,
+    section_end: str,
+    analysis_markdown: str,
+    shading: str,
+    body_font: str = "仿宋_GB2312",
+    body_size: float = 14,
+) -> str:
+    _, analysis_index, end_index = _ordered_anchors(
+        document, section_start, analysis_anchor, section_end
+    )
+    paragraphs = document.paragraphs
+    for paragraph in reversed(paragraphs[analysis_index + 1 : end_index]):
+        parent = paragraph._element.getparent()
+        if parent is not None:
+            parent.remove(paragraph._element)
+    _insert_formatted_lines(
+        paragraphs[analysis_index],
+        analysis_markdown.splitlines(),
+        shading,
+        body_font,
+        body_size,
+    )
+    return f"after analysis anchor paragraph {analysis_index + 1} (replace)"
+
+
+def insert_analysis_body(
+    document: Document,
+    section_start: str,
+    analysis_anchor: str,
+    section_end: str,
+    analysis_markdown: str,
+    shading: str,
+    body_font: str = "仿宋_GB2312",
+    body_size: float = 14,
+) -> str:
+    _, analysis_index, _ = _ordered_anchors(
+        document, section_start, analysis_anchor, section_end
+    )
+    lines = ["【Codex财务分析更新建议】", *analysis_markdown.splitlines()]
+    _insert_formatted_lines(
+        document.paragraphs[analysis_index],
+        lines,
+        shading,
+        body_font,
+        body_size,
+    )
+    return f"after analysis anchor paragraph {analysis_index + 1} (insert)"
 
 
 def insert_block(document: Document, anchor_idx: int | None, update_text: str) -> str:
@@ -41,9 +147,7 @@ def insert_block(document: Document, anchor_idx: int | None, update_text: str) -
         lines.extend(["", pending_marker, "详见待核验清单。"])
 
     if anchor_idx is None:
-        for line in lines:
-            document.add_paragraph(line)
-        return "document-end"
+        raise ValueError("financial-analysis section not found; insertion is blocked")
 
     anchor = document.paragraphs[anchor_idx]
     current = anchor
@@ -86,6 +190,10 @@ def main() -> int:
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--mode", choices=("insert", "replace"), default="insert")
     parser.add_argument("--confirm-replace", action="store_true")
+    parser.add_argument("--section-start", default="财务分析")
+    parser.add_argument("--analysis-anchor", default="合并财务情况分析")
+    parser.add_argument("--section-end", default="行业分析")
+    parser.add_argument("--change-shading", default="FFF2CC")
     args = parser.parse_args()
 
     if args.docx.suffix.lower() != ".docx":
@@ -97,12 +205,27 @@ def main() -> int:
 
     document = Document(str(args.docx))
     update_text = args.update_markdown.read_text(encoding="utf-8-sig").strip()
-    anchor_idx = find_anchor(document)
-
-    if args.mode == "insert":
-        location = insert_block(document, anchor_idx, update_text)
-    else:
-        location = replace_section(document, anchor_idx, update_text)
+    try:
+        if args.mode == "insert":
+            location = insert_analysis_body(
+                document,
+                args.section_start,
+                args.analysis_anchor,
+                args.section_end,
+                update_text,
+                args.change_shading,
+            )
+        else:
+            location = replace_analysis_body(
+                document,
+                args.section_start,
+                args.analysis_anchor,
+                args.section_end,
+                update_text,
+                args.change_shading,
+            )
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     document.save(str(args.out))

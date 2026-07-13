@@ -9,14 +9,27 @@ from datetime import datetime
 from pathlib import Path
 
 
-def backup_path(source: Path) -> Path:
+def backup_path(source: Path, directory: Path | None = None) -> Path:
+    target_dir = directory.resolve() if directory else source.resolve().parent
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    candidate = source.with_name(f"{source.stem}.backup-{stamp}{source.suffix}")
+    candidate = target_dir / f"{source.stem}.backup-{stamp}{source.suffix}"
     counter = 1
     while candidate.exists():
-        candidate = source.with_name(f"{source.stem}.backup-{stamp}-{counter}{source.suffix}")
+        candidate = target_dir / f"{source.stem}.backup-{stamp}-{counter}{source.suffix}"
         counter += 1
     return candidate
+
+
+def create_backup(source: Path, target: Path | None = None) -> Path:
+    source = source.resolve()
+    if source.suffix.lower() != ".docx" or not source.is_file():
+        raise ValueError(f"invalid DOCX source: {source}")
+    target = target.resolve() if target else backup_path(source)
+    if target.exists():
+        raise FileExistsError(f"backup already exists: {target}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, target)
+    return target
 
 
 def main() -> int:
@@ -25,16 +38,10 @@ def main() -> int:
     parser.add_argument("--out", type=Path, help="Optional explicit backup path")
     args = parser.parse_args()
 
-    source = args.docx.resolve()
-    if source.suffix.lower() != ".docx":
-        raise SystemExit("only .docx files are supported")
-    if not source.exists():
-        raise SystemExit(f"file not found: {source}")
-
-    target = args.out.resolve() if args.out else backup_path(source)
-    if target.exists():
-        raise SystemExit(f"backup already exists: {target}")
-    shutil.copy2(source, target)
+    try:
+        target = create_backup(args.docx, args.out)
+    except (ValueError, FileExistsError) as error:
+        raise SystemExit(str(error)) from error
     print(target)
     return 0
 
