@@ -278,6 +278,36 @@ def main() -> None:
             bundle_with_analysis_markdown("公司授信余额较上年下降。"),
             0,
         ),
+        (
+            "forbidden_credit_recommendation_amount_risk",
+            bundle_with_risk_statement("本次授信建议为100万元。"),
+            1,
+        ),
+        (
+            "forbidden_credit_recommendation_amount_analysis",
+            bundle_with_analysis_markdown("本次授信建议为100万元。"),
+            1,
+        ),
+        (
+            "forbidden_credit_limit_decision_risk",
+            bundle_with_risk_statement("公司授信额度确定为100万元。"),
+            1,
+        ),
+        (
+            "forbidden_credit_limit_decision_analysis",
+            bundle_with_analysis_markdown("公司授信额度确定为100万元。"),
+            1,
+        ),
+        (
+            "allowed_credit_limit_fact_risk",
+            bundle_with_risk_statement("截至报告期，公司银行授信额度为100万元。"),
+            0,
+        ),
+        (
+            "allowed_credit_limit_fact_analysis",
+            bundle_with_analysis_markdown("截至报告期，公司银行授信额度为100万元。"),
+            0,
+        ),
         ("empty_source_metadata", empty_source_metadata, 1),
         ("missing_metric", missing_metric, 1),
         ("missing_ratio_label_period", missing_ratio_label_period, 1),

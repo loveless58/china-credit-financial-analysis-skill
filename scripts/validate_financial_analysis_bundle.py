@@ -24,8 +24,14 @@ CREDIT_SEMANTICS = r"(?:授信(?:审批)?|信贷)"
 AFFIRMATIVE_DECISIONS = r"(?:同意|给予|予以|批准|核准|批复)"
 NEGATIVE_DECISIONS = r"(?:不建议|不同意|不予|拒绝|否决|不通过)"
 PASS_DECISIONS = r"(?:通过|批准|核准)"
-AMOUNT_DECISIONS = r"(?:建议|拟定|核定|批准|核准|批复|给予|予以)"
+AMOUNT_DECISIONS = r"(?:建议|拟定|核定|确定|决定|批准|核准|批复|给予|予以)"
 MONEY_AMOUNT = r"(?:人民币)?\d+(?:\.\d+)?(?:亿元|万元|元)"
+CREDIT_LIMIT_SEMANTICS = r"(?:额度|限额)"
+TEXT_WINDOW_SEPARATOR = re.compile(r"[。！？!?；;\r\n]+")
+CREDIT_SEMANTICS_PATTERN = re.compile(CREDIT_SEMANTICS)
+AMOUNT_DECISIONS_PATTERN = re.compile(AMOUNT_DECISIONS)
+MONEY_AMOUNT_PATTERN = re.compile(MONEY_AMOUNT)
+CREDIT_LIMIT_SEMANTICS_PATTERN = re.compile(CREDIT_LIMIT_SEMANTICS)
 FORBIDDEN_CONCLUSION_PATTERNS = {
     "同意": re.compile(
         rf"{AFFIRMATIVE_DECISIONS}.{{0,8}}{CREDIT_SEMANTICS}|"
@@ -38,11 +44,6 @@ FORBIDDEN_CONCLUSION_PATTERNS = {
     "通过": re.compile(
         rf"{PASS_DECISIONS}.{{0,8}}{CREDIT_SEMANTICS}|"
         rf"{CREDIT_SEMANTICS}.{{0,8}}{PASS_DECISIONS}"
-    ),
-    "额度": re.compile(
-        rf"{AMOUNT_DECISIONS}.{{0,8}}{CREDIT_SEMANTICS}.{{0,12}}{MONEY_AMOUNT}|"
-        rf"{AMOUNT_DECISIONS}.{{0,12}}(?:授信)?(?:额度|限额)|"
-        rf"(?:授信)?(?:额度|限额).{{0,8}}{AMOUNT_DECISIONS}"
     ),
     "风险结论": re.compile(r"风险可控"),
 }
@@ -192,14 +193,35 @@ def validate_ratios(ratios: Any, ratios_contract: dict[str, Any]) -> list[str]:
     return errors
 
 
+def text_windows(text: str) -> list[str]:
+    """Keep decision terms within their sentence, semicolon, or line window."""
+    return [window.strip() for window in TEXT_WINDOW_SEPARATOR.split(text) if window.strip()]
+
+
+def contains_forbidden_amount_decision(text: str) -> bool:
+    for window in text_windows(text):
+        if not CREDIT_SEMANTICS_PATTERN.search(window):
+            continue
+        if not AMOUNT_DECISIONS_PATTERN.search(window):
+            continue
+        if MONEY_AMOUNT_PATTERN.search(window) or CREDIT_LIMIT_SEMANTICS_PATTERN.search(
+            window
+        ):
+            return True
+    return False
+
+
 def forbidden_conclusion_categories(text: Any) -> list[str]:
     if not is_non_empty_string(text):
         return []
-    return [
+    categories = [
         category
         for category, pattern in FORBIDDEN_CONCLUSION_PATTERNS.items()
         if pattern.search(text)
     ]
+    if contains_forbidden_amount_decision(text):
+        categories.append("额度")
+    return categories
 
 
 def validate_risk_points(
