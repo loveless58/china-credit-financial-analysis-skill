@@ -12,6 +12,9 @@ from docx import Document
 from docx.oxml.ns import qn
 
 
+CODEX_INSERT_MARKER = "【Codex财务分析更新建议】"
+
+
 def para_shade(paragraph) -> str | None:
     shd = paragraph._p.get_or_add_pPr().find(qn("w:shd"))
     return shd.get(qn("w:fill")) if shd is not None else None
@@ -79,6 +82,7 @@ def find_expected_analysis_paragraphs(
     end: int,
     analysis_anchor: str,
     expected_lines: list[str],
+    allow_codex_marker: bool = False,
 ) -> tuple[bool, list]:
     anchor_index = next(
         (
@@ -93,19 +97,21 @@ def find_expected_analysis_paragraphs(
 
     matched = []
     cursor = anchor_index + 1
+    if allow_codex_marker:
+        if (
+            cursor >= end
+            or document.paragraphs[cursor].text.strip() != CODEX_INSERT_MARKER
+        ):
+            return True, []
+        cursor += 1
     for expected_line in expected_lines:
-        match_index = next(
-            (
-                index
-                for index in range(cursor, end)
-                if document.paragraphs[index].text.strip() == expected_line
-            ),
-            None,
-        )
-        if match_index is None:
+        if (
+            cursor >= end
+            or document.paragraphs[cursor].text.strip() != expected_line
+        ):
             break
-        matched.append(document.paragraphs[match_index])
-        cursor = match_index + 1
+        matched.append(document.paragraphs[cursor])
+        cursor += 1
     return True, matched
 
 
@@ -187,6 +193,7 @@ def validate_financial_docx(
             end,
             analysis_anchor,
             expected_lines,
+            allow_codex_marker=allow_codex_marker,
         )
     body_sample_paragraphs = (
         matched_analysis_paragraphs if precise_body_validation else shaded_paragraphs

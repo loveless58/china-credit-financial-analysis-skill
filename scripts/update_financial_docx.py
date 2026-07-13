@@ -158,10 +158,23 @@ def _has_reusable_explicit_format(run) -> bool:
     r_pr = run._element.rPr
     if r_pr is None or r_pr.rFonts is None or run.font.size is None:
         return False
+    return bool(r_pr.rFonts.get(qn("w:eastAsia")))
+
+
+def _text_node_has_reusable_explicit_format(text_node) -> bool:
+    run_element = text_node.getparent()
+    if run_element is None or run_element.tag != qn("w:r"):
+        return False
+    r_pr = run_element.find(qn("w:rPr"))
+    if r_pr is None:
+        return False
+    r_fonts = r_pr.find(qn("w:rFonts"))
+    size = r_pr.find(qn("w:sz"))
     return bool(
-        r_pr.rFonts.get(qn("w:eastAsia"))
-        or r_pr.rFonts.get(qn("w:ascii"))
-        or r_pr.rFonts.get(qn("w:hAnsi"))
+        r_fonts is not None
+        and r_fonts.get(qn("w:eastAsia"))
+        and size is not None
+        and size.get(qn("w:val"))
     )
 
 
@@ -171,7 +184,8 @@ def _prepare_empty_formatted_cells(table, rows: list[list[str]]) -> None:
             if not str(value):
                 continue
             cell = table.cell(row_index, col_index)
-            if next(iter(cell._tc.iter(qn("w:t"))), None) is not None:
+            text_nodes = list(cell._tc.iter(qn("w:t")))
+            if text_nodes and _text_node_has_reusable_explicit_format(text_nodes[0]):
                 continue
             reusable_run = next(
                 (
@@ -184,10 +198,34 @@ def _prepare_empty_formatted_cells(table, rows: list[list[str]]) -> None:
             )
             if reusable_run is None:
                 raise UpdateBlocked(
-                    "no reusable formatted run for non-empty table cell",
+                    "no reusable formatted run; "
+                    "first table text run has no reusable explicit format",
                     [f"row={row_index} column={col_index}"],
                 )
+            for text_node in text_nodes:
+                parent = text_node.getparent()
+                if parent is not None:
+                    parent.remove(text_node)
             reusable_run._element.append(OxmlElement("w:t"))
+
+
+def table_text_runs_have_explicit_format(
+    table,
+    rows: list[list[str]],
+) -> bool:
+    for row_index, row in enumerate(rows):
+        for col_index, value in enumerate(row):
+            if not str(value):
+                continue
+            cell = table.cell(row_index, col_index)
+            first_text = next(iter(cell._tc.iter(qn("w:t"))), None)
+            if (
+                first_text is None
+                or first_text.text != str(value)
+                or not _text_node_has_reusable_explicit_format(first_text)
+            ):
+                return False
+    return True
 
 
 def _element_xml(element) -> str | None:
@@ -298,6 +336,7 @@ def update_financial_docx(
     document.save(str(output))
 
     table_format_preserved = None
+    table_text_runs_formatted = None
     if expected_table_format is not None:
         saved_document = Document(str(output))
         if asset_table_index is not None and asset_table_index < len(saved_document.tables):
@@ -306,8 +345,12 @@ def update_financial_docx(
                 table_format_fingerprint(saved_table, asset_liability_rows)
                 == expected_table_format
             )
+            table_text_runs_formatted = table_text_runs_have_explicit_format(
+                saved_table, asset_liability_rows
+            )
         else:
             table_format_preserved = False
+            table_text_runs_formatted = False
 
     validation = validate_financial_docx(
         docx=output,
@@ -329,6 +372,14 @@ def update_financial_docx(
         )
         if not table_format_preserved:
             validation["failed"].append("asset_table_target_format_preserved")
+    if table_text_runs_formatted is not None:
+        validation["checks"]["asset_table_target_text_runs_formatted"] = (
+            table_text_runs_formatted
+        )
+        if not table_text_runs_formatted:
+            validation["failed"].append(
+                "asset_table_target_text_runs_formatted"
+            )
     validation_result = write_json(
         out_dir / "validation_result.json", validation
     )

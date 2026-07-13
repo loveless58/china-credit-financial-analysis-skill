@@ -16,6 +16,7 @@ from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt
+from docx.text.paragraph import Paragraph
 
 from backup_docx import backup_path
 from validate_financial_docx import validate_financial_docx
@@ -91,6 +92,14 @@ def format_run(run, font_name: str, font_size: float) -> None:
     )
 
 
+def add_paragraph_after(paragraph, text: str):
+    new_p = OxmlElement("w:p")
+    paragraph._p.addnext(new_p)
+    inserted = Paragraph(new_p, paragraph._parent)
+    inserted.add_run(text)
+    return inserted
+
+
 def table_rows() -> list[list[str]]:
     rows = [
         ["资产负债简表（合并口径，单位：万元）", "", ""],
@@ -116,6 +125,14 @@ def make_source_docx(path: Path, target_cell_mode: str = "text") -> None:
             if row_index == 2 and col_index == 2 and target_cell_mode != "text":
                 if target_cell_mode == "formatted-empty-run":
                     format_run(cell.paragraphs[0].add_run(), "仿宋", 11)
+                elif target_cell_mode in {
+                    "unsafe-empty-text-node",
+                    "unsafe-text-node-with-formatted-run",
+                }:
+                    unsafe_run = cell.paragraphs[0].add_run()
+                    unsafe_run._element.append(OxmlElement("w:t"))
+                    if target_cell_mode == "unsafe-text-node-with-formatted-run":
+                        format_run(cell.paragraphs[0].add_run(), "仿宋", 11)
                 elif target_cell_mode != "unsafe-empty":
                     raise ValueError(f"unknown target_cell_mode: {target_cell_mode}")
                 continue
@@ -252,6 +269,7 @@ def assert_replace_success(source: Path, source_hash_before: str, tmp_path: Path
     ):
         assert validation["checks"][key] is True
     assert validation["checks"]["asset_table_target_format_preserved"] is True
+    assert validation["checks"]["asset_table_target_text_runs_formatted"] is True
     assert (out_dir / "change_log.md").exists()
     assert (out_dir / "待核验清单.md").exists()
 
@@ -398,6 +416,7 @@ def assert_formatted_empty_run_preserved(tmp_path: Path) -> None:
         (out_dir / "validation_result.json").read_text(encoding="utf-8")
     )
     assert validation["checks"]["asset_table_target_format_preserved"] is True
+    assert validation["checks"]["asset_table_target_text_runs_formatted"] is True
 
     unsafe_source = tmp_path / "unsafe-empty-source.docx"
     make_source_docx(unsafe_source, target_cell_mode="unsafe-empty")
@@ -437,6 +456,64 @@ def assert_unrelated_shading_not_accepted(tmp_path: Path) -> None:
     assert "analysis_paragraph_size_matches" in validation["failed"]
 
 
+def assert_unsafe_empty_text_node_handled(tmp_path: Path) -> None:
+    unsafe_source = tmp_path / "unsafe-text-node-source.docx"
+    make_source_docx(unsafe_source, target_cell_mode="unsafe-empty-text-node")
+    unsafe_out = tmp_path / "unsafe-text-node-output"
+    unsafe_result = run_updater(unsafe_source, valid_bundle(), unsafe_out)
+    assert unsafe_result.returncode != 0, "unsafe empty w:t was accepted"
+    assert "first table text run has no reusable explicit format" in unsafe_result.stderr
+    assert len(list(unsafe_out.glob("*.backup-*.docx"))) == 1
+    assert (unsafe_out / "number_audit.json").exists()
+    assert not (unsafe_out / OUTPUT_FILENAME).exists()
+
+    fallback_source = tmp_path / "safe-fallback-source.docx"
+    make_source_docx(
+        fallback_source,
+        target_cell_mode="unsafe-text-node-with-formatted-run",
+    )
+    fallback_out = tmp_path / "safe-fallback-output"
+    fallback_result = run_updater(fallback_source, valid_bundle(), fallback_out)
+    assert fallback_result.returncode == 0, fallback_result.stderr
+    output_document = Document(str(fallback_out / OUTPUT_FILENAME))
+    output_run = run_with_text(output_document.tables[0].cell(2, 2), "120.00")
+    assert east_asia_font(output_run) == "仿宋"
+    assert output_run.font.size.pt == 11
+    validation = json.loads(
+        (fallback_out / "validation_result.json").read_text(encoding="utf-8")
+    )
+    assert validation["checks"]["asset_table_target_text_runs_formatted"] is True
+
+
+def assert_noncontiguous_analysis_rejected(tmp_path: Path) -> None:
+    docx = tmp_path / "noncontiguous-analysis.docx"
+    make_source_docx(docx)
+    document = Document(str(docx))
+    wrong_paragraph = document.paragraphs[2]
+    wrong_paragraph.text = "错误中间段落。"
+    expected_paragraph = add_paragraph_after(wrong_paragraph, "旧财务分析内容。")
+    set_paragraph_shading(expected_paragraph, "FFF2CC")
+    format_run(expected_paragraph.runs[0], "仿宋_GB2312", 14)
+    document.save(str(docx))
+
+    validation = validate_financial_docx(
+        docx=docx,
+        section_start=SECTION_START,
+        section_end=SECTION_END,
+        target_unit="万元",
+        forbidden_units=["亿元"],
+        expected_shading="FFF2CC",
+        body_font="仿宋_GB2312",
+        body_size=14,
+        min_asset_table_rows=20,
+        allow_codex_marker=False,
+        analysis_anchor=ANALYSIS_ANCHOR,
+        expected_analysis_lines=["旧财务分析内容。"],
+    )
+    assert validation["checks"]["analysis_lines_found"] is False
+    assert "analysis_lines_found" in validation["failed"]
+
+
 def assert_table_format_fingerprint_detects_loss(tmp_path: Path) -> None:
     from update_financial_docx import table_format_fingerprint
 
@@ -464,6 +541,10 @@ def run_selected_case(case: str, tmp_path: Path) -> None:
         assert_unrelated_shading_not_accepted(tmp_path)
     elif case == "table-format-gate":
         assert_table_format_fingerprint_detects_loss(tmp_path)
+    elif case == "unsafe-empty-text-node":
+        assert_unsafe_empty_text_node_handled(tmp_path)
+    elif case == "noncontiguous-analysis":
+        assert_noncontiguous_analysis_rejected(tmp_path)
     else:
         raise ValueError(f"unknown self-test case: {case}")
 
@@ -491,6 +572,8 @@ def main() -> int:
         assert_formatted_empty_run_preserved(tmp_path)
         assert_unrelated_shading_not_accepted(tmp_path)
         assert_table_format_fingerprint_detects_loss(tmp_path)
+        assert_unsafe_empty_text_node_handled(tmp_path)
+        assert_noncontiguous_analysis_rejected(tmp_path)
 
     print("financial DOCX update self-test passed")
     return 0
