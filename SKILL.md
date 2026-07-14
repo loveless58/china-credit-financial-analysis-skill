@@ -35,6 +35,7 @@ Read only the files needed for the current task:
 - DOCX financial-section order, table format, font, unit, and shading contract: `references/docx-format-contract.md`.
 - Listed-company official disclosure workflow: `references/listed-company-official-data.md`.
 - Bundle contract: read `references/financial-analysis-bundle.md` whenever producing an analysis-only handoff or preparing a DOCX write-back.
+- Capability request/result contract: read `references/financial-capability-contract.md` whenever an orchestrator, Codex task, or command-line run will perform formal DOCX write-back.
 
 ## Workflow
 
@@ -46,9 +47,11 @@ Read only the files needed for the current task:
 6. Read `references/financial-analysis-bundle.md`, draft `docx_write_plan.analysis_markdown`, and assemble the complete `financial_analysis_bundle.json`. This bundle is the only public handoff interface before write-back; downstream audit and DOCX operations must not consume temporary calculation files.
 7. Validate the assembled bundle with `scripts/validate_financial_analysis_bundle.py`. Do not continue to DOCX write-back unless validation exits successfully.
 8. In analysis-only mode, deliver the validated `financial_analysis_bundle.json` and its validation result without creating or updating a DOCX.
-9. For formal DOCX write-back, call only `scripts/update_financial_docx.py` with the validated bundle. The updater owns backup creation, section localization, format-preserving replacement, number audit, structural validation, change log, and pending-verification output; any failure must return a non-zero exit and stop the workflow.
-10. Keep the bundle, validation results, backups, updated DOCX files, audits, Markdown deliverables, renders, and all other run artifacts in the declared output directory outside the Skill repository.
-11. Try visual render QA when the environment has Word/LibreOffice/render tools. If not available, explicitly say visual QA was not completed.
+9. For formal DOCX write-back, assemble `capability_request.json` according to `references/financial-capability-contract.md` and call only `scripts/run_financial_analysis_capability.py`. Relative paths are resolved from the request file; the artifact directory must be outside the Skill repository and absent or empty.
+10. Treat `capability_result.json` as the machine-readable execution receipt. Report its `status`, `errors`, source-integrity result, metrics, and artifact paths. Do not infer success from process output or the presence of a DOCX alone.
+11. The unified runner delegates DOCX work to `scripts/update_financial_docx.py`. That internal updater remains the sole owner of backup creation, section localization, format-preserving replacement, number audit, structural validation, change log, and pending-verification output.
+12. Keep the bundle, validation results, backups, updated DOCX files, audits, Markdown deliverables, renders, and all other run artifacts in the declared output directory outside the Skill repository.
+13. Try visual render QA when the environment has Word/LibreOffice/render tools. If not available, explicitly say visual QA was not completed.
 
 ## Script Quick Start
 
@@ -82,11 +85,13 @@ Validate the public bundle before any write-back:
 python -B scripts/validate_financial_analysis_bundle.py C:\tmp\financial_analysis_bundle.json --schema schemas\financial_analysis_bundle.schema.json --out C:\tmp\bundle_validation.json
 ```
 
-Formally write back a validated bundle through the single updater entry point:
+Formally write back a validated bundle through the public capability entry point:
 
 ```powershell
-python -B scripts/update_financial_docx.py C:\tmp\source.docx C:\tmp\financial_analysis_bundle.json --schema schemas\financial_analysis_bundle.schema.json --out-dir C:\tmp\financial-analysis-output
+python -B scripts/run_financial_analysis_capability.py C:\tmp\capability_request.json
 ```
+
+Exit code `0` means `success`, `2` means a governed `blocked` result, and `3` means execution failure or an untrusted request. Read the emitted `capability_result.json`; do not use the exit code as the complete audit record.
 
 ## Output Contract
 
@@ -102,6 +107,7 @@ Always distinguish:
 - Pending human verification items.
 - Limitations, including unavailable visual render QA.
 - The validated `financial_analysis_bundle.json` path and bundle validation result; these may be the complete deliverable in analysis-only mode.
+- For formal write-back, the `capability_result.json` path, stable status, errors, source before/after hashes, audit metrics, and descriptors for every generated artifact.
 - Confirmation that every run artifact path is outside the Skill repository.
 
 ## Common Mistakes

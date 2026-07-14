@@ -2,6 +2,8 @@
 
 `financial_analysis_bundle.json` 是第一阶段唯一新增的跨模块公开接口。文件必须为 UTF-8 JSON 对象，且 `schema_version` 固定为 `"1.0"`。后续数字审计和 DOCX 写回只能依赖这个 bundle，不得依赖 `calculated_metrics.json` 等临时文件。
 
+它是稳定的**业务载荷**，不承担一次执行的请求状态、文件路径归一化、退出状态或审计回执。正式写回时，由 `capability_request.json` 引用该 bundle，统一入口执行后以 `capability_result.json` 返回状态和全部产物凭证。三者边界见 `references/financial-capability-contract.md`。
+
 ## 顶层字段
 
 | 字段 | 类型 | 约束与语义 |
