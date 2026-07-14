@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.bank-rm/schemas/capability_result-1.0.json",
+  "title": "China Credit Financial Analysis Capability Result 1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "capability",
+    "request_id",
+    "operation",
+    "status",
+    "started_at",
+    "completed_at",
+    "inputs",
+    "source_integrity",
+    "artifacts",
+    "metrics",
+    "errors"
+  ],
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "size_bytes"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9A-Fa-f]{64}$"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "nullable_artifact": {
+      "anyOf": [
+        {"$ref": "#/$defs/artifact"},
+        {"type": "null"}
+      ]
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "capability": {
+      "const": "china-credit-financial-analysis"
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "operation": {
+      "const": "update_docx"
+    },
+    "status": {
+      "enum": ["success", "blocked", "failed"]
+    },
+    "started_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+    },
+    "completed_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?Z$"
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_docx", "financial_analysis_bundle"],
+      "properties": {
+        "source_docx": {"$ref": "#/$defs/nullable_artifact"},
+        "financial_analysis_bundle": {"$ref": "#/$defs/nullable_artifact"}
+      }
+    },
+    "source_integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["before_sha256", "after_sha256", "unchanged"],
+      "properties": {
+        "before_sha256": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9A-Fa-f]{64}$"
+        },
+        "after_sha256": {
+          "type": ["string", "null"],
+          "pattern": "^[0-9A-Fa-f]{64}$"
+        },
+        "unchanged": {
+          "type": ["boolean", "null"]
+        }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "capability_request",
+        "financial_analysis_bundle",
+        "bundle_validation",
+        "backup_docx",
+        "updated_docx",
+        "number_audit",
+        "validation_result",
+        "change_log",
+        "pending_verification"
+      ],
+      "properties": {
+        "capability_request": {"$ref": "#/$defs/nullable_artifact"},
+        "financial_analysis_bundle": {"$ref": "#/$defs/nullable_artifact"},
+        "bundle_validation": {"$ref": "#/$defs/nullable_artifact"},
+        "backup_docx": {"$ref": "#/$defs/nullable_artifact"},
+        "updated_docx": {"$ref": "#/$defs/nullable_artifact"},
+        "number_audit": {"$ref": "#/$defs/nullable_artifact"},
+        "validation_result": {"$ref": "#/$defs/nullable_artifact"},
+        "change_log": {"$ref": "#/$defs/nullable_artifact"},
+        "pending_verification": {"$ref": "#/$defs/nullable_artifact"}
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["number_findings", "docx_failed_checks"],
+      "properties": {
+        "number_findings": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        },
+        "docx_failed_checks": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        }
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "message", "details"],
+        "properties": {
+          "code": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9_]*$"
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1
+          },
+          "details": {
+            "type": "array"
+          }
+        }
+      }
+    }
+  }
+}

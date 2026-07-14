@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local.bank-rm/schemas/capability_request-1.0.json",
+  "title": "China Credit Financial Analysis Capability Request 1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "capability",
+    "request_id",
+    "operation",
+    "inputs",
+    "artifact_directory"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "capability": {
+      "const": "china-credit-financial-analysis"
+    },
+    "request_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "operation": {
+      "const": "update_docx"
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_docx",
+        "financial_analysis_bundle"
+      ],
+      "properties": {
+        "source_docx": {
+          "type": "string",
+          "minLength": 1
+        },
+        "financial_analysis_bundle": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_docx_sha256": {
+          "type": "string",
+          "pattern": "^[0-9A-Fa-f]{64}$"
+        }
+      }
+    },
+    "artifact_directory": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}
