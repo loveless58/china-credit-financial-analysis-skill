@@ -201,7 +201,8 @@ def build_result(
     status: str,
     started_at: str,
     source_docx: Path,
-    input_bundle: Path,
+    source_input: dict[str, object] | None,
+    bundle_input: dict[str, object] | None,
     source_hash_before: str | None,
     artifact_paths: dict[str, Path | None],
     metrics: dict[str, int | None],
@@ -225,8 +226,8 @@ def build_result(
         "started_at": started_at,
         "completed_at": utc_now(),
         "inputs": {
-            "source_docx": artifact_descriptor(source_docx),
-            "financial_analysis_bundle": artifact_descriptor(input_bundle),
+            "source_docx": source_input,
+            "financial_analysis_bundle": bundle_input,
         },
         "source_integrity": {
             "before_sha256": source_hash_before,
@@ -279,22 +280,34 @@ def run(request_path: Path) -> tuple[int, Path]:
     write_json(request_copy, normalized)
 
     source_hash_before: str | None = None
+    source_input: dict[str, object] | None = None
+    bundle_input: dict[str, object] | None = None
     bundle: dict[str, Any] | None = None
     updater_result: dict[str, str] | None = None
     status = "failed"
     errors: list[dict] = []
 
     try:
+        source_input = artifact_descriptor(source_docx)
+        bundle_input = artifact_descriptor(input_bundle)
         missing = [
             str(path)
-            for path in (source_docx, input_bundle)
-            if not path.is_file()
+            for path, descriptor in (
+                (source_docx, source_input),
+                (input_bundle, bundle_input),
+            )
+            if descriptor is None
         ]
         if missing:
             raise UpdateBlocked("input file is missing", missing)
 
-        source_hash_before = sha256(source_docx)
+        source_hash_before = str(source_input["sha256"])
         shutil.copyfile(input_bundle, bundle_copy)
+        if sha256(bundle_copy) != bundle_input["sha256"]:
+            raise UpdateBlocked(
+                "input financial_analysis_bundle changed during materialization",
+                [str(input_bundle)],
+            )
         try:
             loaded_bundle = load_json(bundle_copy)
         except (OSError, json.JSONDecodeError) as error:
@@ -337,6 +350,8 @@ def run(request_path: Path) -> tuple[int, Path]:
             code = "SOURCE_HASH_MISMATCH"
         elif str(error) == "input file is missing":
             code = "INPUT_FILE_MISSING"
+        elif str(error) == "input financial_analysis_bundle changed during materialization":
+            code = "INPUT_BUNDLE_CHANGED"
         elif str(error) == "number audit failed":
             code = "NUMBER_AUDIT_FAILED"
         else:
@@ -363,7 +378,8 @@ def run(request_path: Path) -> tuple[int, Path]:
         status=status,
         started_at=started_at,
         source_docx=source_docx,
-        input_bundle=input_bundle,
+        source_input=source_input,
+        bundle_input=bundle_input,
         source_hash_before=source_hash_before,
         artifact_paths=artifact_paths,
         metrics=metrics,

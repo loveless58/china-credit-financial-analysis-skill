@@ -18,6 +18,50 @@
     "metrics",
     "errors"
   ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {"status": {"const": "success"}},
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {
+          "source_integrity": {
+            "properties": {"unchanged": {"const": true}}
+          },
+          "artifacts": {
+            "properties": {
+              "capability_request": {"$ref": "#/$defs/artifact"},
+              "financial_analysis_bundle": {"$ref": "#/$defs/artifact"},
+              "bundle_validation": {"$ref": "#/$defs/artifact"},
+              "backup_docx": {"$ref": "#/$defs/artifact"},
+              "updated_docx": {"$ref": "#/$defs/artifact"},
+              "number_audit": {"$ref": "#/$defs/artifact"},
+              "validation_result": {"$ref": "#/$defs/artifact"},
+              "change_log": {"$ref": "#/$defs/artifact"},
+              "pending_verification": {"$ref": "#/$defs/artifact"}
+            }
+          },
+          "metrics": {
+            "properties": {
+              "number_findings": {"const": 0},
+              "docx_failed_checks": {"const": 0}
+            }
+          },
+          "errors": {"maxItems": 0}
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {"status": {"enum": ["blocked", "failed"]}},
+        "required": ["status"]
+      },
+      "then": {
+        "properties": {"errors": {"minItems": 1}}
+      }
+    }
+  ],
   "$defs": {
     "artifact": {
       "type": "object",
